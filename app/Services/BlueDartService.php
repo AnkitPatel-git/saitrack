@@ -12,7 +12,7 @@ class BlueDartService implements DeliveryServiceInterface
     // test base url
     private $baseUrl = 'https://apigateway-sandbox.bluedart.com';
     // prod url 
-    private $baseUrl_prod = 'https://apigateway.bluedart.com';
+    private $baseUrl_prod = 'produrl';
 
     // login credentials (common)
     private $clientId = 'D7FGUzOG0AvjIGT6uGLRXs6AH8GbzhbA';
@@ -30,9 +30,9 @@ class BlueDartService implements DeliveryServiceInterface
 
     // Static for waybill / tracking prod
     private $loginId_prod = 'BOM77977';
-    private $licenceKey_prod = 'l8hgvmorurqgu8nss8kikukxwovloppp';
+    private $licenceKey_prod = 'l8hgvmorurqgu8nss8kikukxwovlopppaa';
     private $trackingLoginId_prod = 'BOM77977';
-    private $trackingLicenceKey_prod = 'qrisjiiqul0ztmhsvgemgqlpopqjhonk';
+    private $trackingLicenceKey_prod = 'qrisjiiqul0ztmhsvgemgqlpopqjhonkaa';
 
     private $jwtToken = null;
 

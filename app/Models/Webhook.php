@@ -20,6 +20,7 @@ class Webhook extends Model
         'api_secret',
         'is_active',
         'token',
-        'test'
+        'test',
+        'service_provider'
     ];
 }
