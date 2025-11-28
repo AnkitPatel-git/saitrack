@@ -6,6 +6,8 @@ use App\Models\DeliveryLog;
 use App\Models\Warehouse;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Barryvdh\DomPDF\Facade\Pdf;
+use setasign\Fpdi\Tcpdf\Fpdi;
 use Throwable;
 
 class DelhiveryLtlService implements DeliveryServiceInterface
@@ -713,32 +715,62 @@ class DelhiveryLtlService implements DeliveryServiceInterface
      */
     public function downloadAndStoreLabels(string $lrNumber, array $labelUrls, string $bookingId = null, int $test = 1): ?string
     {
+        // Store original time limit to restore later
+        $originalTimeLimit = ini_get('max_execution_time');
+        
         try {
             if (empty($labelUrls)) {
                 Log::warning("No label URLs provided for LR: {$lrNumber}");
                 return null;
             }
 
+            // Increase max execution time for downloading multiple labels
+            set_time_limit(300); // 5 minutes for downloading and processing multiple labels
+
             // Get JWT token for authentication (label URLs might require auth)
             $jwt = $this->authenticate($test);
 
-            // Download all labels
+            // Download all labels in parallel for faster processing
+            Log::info("Downloading " . count($labelUrls) . " labels in parallel for LR: {$lrNumber}");
             $downloadedImages = [];
             
+            // Execute all requests concurrently using HTTP pool
+            $responses = Http::pool(function ($pool) use ($labelUrls, $jwt) {
+                $requests = [];
+                foreach ($labelUrls as $index => $labelUrl) {
+                    $requests["label_{$index}"] = $pool->as("label_{$index}")
+                        ->withHeaders([
+                            'Authorization' => "Bearer {$jwt}",
+                        ])
+                        ->timeout(60)
+                        ->get($labelUrl);
+                }
+                return $requests;
+            });
+            
+            // Handle any failed requests by retrying individually without auth
             foreach ($labelUrls as $index => $labelUrl) {
-                try {
-                    Log::info("Downloading Delhivery label " . ($index + 1) . " from: {$labelUrl}");
-                    
-                    // Try with authentication first
-                    $response = Http::withHeaders([
-                        'Authorization' => "Bearer {$jwt}",
-                    ])->timeout(30)->get($labelUrl);
-                    
-                    // If unauthorized, try without auth (some URLs might be public)
-                    if ($response->status() === 401 || $response->status() === 403) {
-                        Log::info("Label URL requires no auth, retrying without Authorization header");
-                        $response = Http::timeout(30)->get($labelUrl);
+                $key = "label_{$index}";
+                if (!isset($responses[$key]) || ($responses[$key]->status() === 401 || $responses[$key]->status() === 403)) {
+                    // Retry without auth
+                    try {
+                        $responses[$key] = Http::timeout(60)->get($labelUrl);
+                    } catch (\Exception $e) {
+                        Log::warning("Failed to retry label " . ($index + 1) . " without auth: " . $e->getMessage());
                     }
+                }
+            }
+            
+            // Process responses
+            foreach ($labelUrls as $index => $labelUrl) {
+                $key = "label_{$index}";
+                try {
+                    if (!isset($responses[$key])) {
+                        Log::warning("No response for label " . ($index + 1) . " from: {$labelUrl}");
+                        continue;
+                    }
+                    
+                    $response = $responses[$key];
                     
                     if ($response->successful()) {
                         $labelData = $response->json();
@@ -817,24 +849,36 @@ class DelhiveryLtlService implements DeliveryServiceInterface
                     } else {
                         Log::warning("Failed to download label " . ($index + 1) . " from: {$labelUrl}. Status: " . $response->status());
                     }
+                } catch (\Illuminate\Http\Client\ConnectionException $e) {
+                    Log::error("Connection timeout/error downloading label " . ($index + 1) . ": " . $e->getMessage());
+                    // Continue with next label instead of failing completely
                 } catch (\Exception $e) {
                     Log::error("Error downloading label " . ($index + 1) . ": " . $e->getMessage());
+                    // Continue with next label instead of failing completely
                 }
             }
+            
+            Log::info("Completed parallel download. Successfully downloaded " . count($downloadedImages) . " out of " . count($labelUrls) . " labels");
 
             if (empty($downloadedImages)) {
                 Log::error("No labels were successfully downloaded for LR: {$lrNumber}");
                 return null;
             }
 
-            // Save the first label (or combine all if needed)
-            // For now, we'll save the first label
-            $firstLabel = $downloadedImages[0];
-            $labelContent = $firstLabel['data'];
-            $extension = $firstLabel['extension'];
+            // Separate PDFs and images
+            $pdfLabels = [];
+            $imageLabels = [];
+            
+            foreach ($downloadedImages as $label) {
+                if ($label['extension'] === 'pdf') {
+                    $pdfLabels[] = $label;
+                } else {
+                    $imageLabels[] = $label;
+                }
+            }
             
             // Generate filename
-            $filename = 'shipping_label_' . $lrNumber . '_' . time() . '.' . $extension;
+            $filename = 'shipping_label_' . $lrNumber . '_' . time() . '.pdf';
             
             // Define the destination path (same as BlueDart)
             $destinationPath = public_path('storage/pdfs/shipping-labels/' . date('Y') . '/' . date('m'));
@@ -844,9 +888,59 @@ class DelhiveryLtlService implements DeliveryServiceInterface
                 mkdir($destinationPath, 0777, true);
             }
             
-            // Save the file
             $filePath = $destinationPath . '/' . $filename;
-            file_put_contents($filePath, $labelContent);
+            
+            // Combine all labels into a single PDF
+            try {
+                // If we have PDFs, merge them first
+                $mergedPdfContent = null;
+                if (!empty($pdfLabels)) {
+                    $mergedPdfContent = $this->mergePdfLabels($pdfLabels);
+                }
+                
+                // If we have images, create a PDF from them
+                $imagePdfContent = null;
+                if (!empty($imageLabels)) {
+                    $imagePdfContent = $this->createPdfFromImages($imageLabels);
+                }
+                
+                // Combine PDF and image PDFs if both exist
+                if ($mergedPdfContent && $imagePdfContent) {
+                    // Save both to temp files and merge
+                    $tempPdf1 = tempnam(sys_get_temp_dir(), 'pdf1_') . '.pdf';
+                    $tempPdf2 = tempnam(sys_get_temp_dir(), 'pdf2_') . '.pdf';
+                    file_put_contents($tempPdf1, $mergedPdfContent);
+                    file_put_contents($tempPdf2, $imagePdfContent);
+                    
+                    $finalPdf = $this->mergePdfFiles([$tempPdf1, $tempPdf2]);
+                    file_put_contents($filePath, $finalPdf);
+                    
+                    // Clean up temp files
+                    @unlink($tempPdf1);
+                    @unlink($tempPdf2);
+                } elseif ($mergedPdfContent) {
+                    // Only PDFs
+                    file_put_contents($filePath, $mergedPdfContent);
+                } elseif ($imagePdfContent) {
+                    // Only images
+                    file_put_contents($filePath, $imagePdfContent);
+                } else {
+                    Log::error("No valid labels to combine for LR: {$lrNumber}");
+                    return null;
+                }
+                
+            } catch (\Exception $e) {
+                Log::error("Error combining labels into PDF: " . $e->getMessage());
+                // Fallback: save first label as before
+                $firstLabel = $downloadedImages[0];
+                $labelContent = $firstLabel['data'];
+                $extension = $firstLabel['extension'];
+                $fallbackFilename = 'shipping_label_' . $lrNumber . '_' . time() . '.' . $extension;
+                $fallbackPath = $destinationPath . '/' . $fallbackFilename;
+                file_put_contents($fallbackPath, $labelContent);
+                $filePath = $fallbackPath;
+                $filename = $fallbackFilename;
+            }
             
             // Verify file was saved
             if (!file_exists($filePath)) {
@@ -859,7 +953,7 @@ class DelhiveryLtlService implements DeliveryServiceInterface
             $relativePath = 'pdfs/shipping-labels/' . date('Y') . '/' . date('m') . '/' . $filename;
             $url = $baseUrl . '/storage/' . $relativePath;
             
-            Log::info("Delhivery label saved successfully: {$url} (Size: " . filesize($filePath) . " bytes)");
+            Log::info("Delhivery combined label saved successfully: {$url} (Size: " . filesize($filePath) . " bytes, Labels: " . count($downloadedImages) . ")");
             
             return $url;
             
@@ -867,8 +961,109 @@ class DelhiveryLtlService implements DeliveryServiceInterface
             Log::error('Delhivery Download and Store Labels Exception: ' . $e->getMessage(), [
                 'trace' => $e->getTraceAsString()
             ]);
+            
             return null;
+        } finally {
+            // Always restore original time limit
+            if ($originalTimeLimit !== false && $originalTimeLimit !== '') {
+                set_time_limit((int)$originalTimeLimit);
+            }
         }
+    }
+
+    /**
+     * Merge multiple PDF labels into a single PDF
+     */
+    private function mergePdfLabels(array $pdfLabels): string
+    {
+        $pdf = new Fpdi();
+        $isFirstPage = true;
+        
+        foreach ($pdfLabels as $index => $label) {
+            try {
+                $tempFile = tempnam(sys_get_temp_dir(), 'pdf_label_') . '.pdf';
+                file_put_contents($tempFile, $label['data']);
+                
+                $pageCount = $pdf->setSourceFile($tempFile);
+                
+                for ($pageNo = 1; $pageNo <= $pageCount; $pageNo++) {
+                    $templateId = $pdf->importPage($pageNo);
+                    $size = $pdf->getTemplateSize($templateId);
+                    
+                    // Add a page (always needed, even for first page)
+                    $pdf->AddPage($size['orientation'], [$size['width'], $size['height']]);
+                    $pdf->useTemplate($templateId);
+                    
+                    $isFirstPage = false;
+                }
+                
+                @unlink($tempFile);
+            } catch (\Exception $e) {
+                Log::error("Error merging PDF label " . ($index + 1) . ": " . $e->getMessage());
+            }
+        }
+        
+        return $pdf->Output('S');
+    }
+    
+    /**
+     * Merge multiple PDF files into a single PDF
+     */
+    private function mergePdfFiles(array $pdfFiles): string
+    {
+        $pdf = new Fpdi();
+        
+        foreach ($pdfFiles as $file) {
+            if (!file_exists($file)) {
+                continue;
+            }
+            
+            try {
+                $pageCount = $pdf->setSourceFile($file);
+                
+                for ($pageNo = 1; $pageNo <= $pageCount; $pageNo++) {
+                    $templateId = $pdf->importPage($pageNo);
+                    $size = $pdf->getTemplateSize($templateId);
+                    
+                    $pdf->AddPage($size['orientation'], [$size['width'], $size['height']]);
+                    $pdf->useTemplate($templateId);
+                }
+            } catch (\Exception $e) {
+                Log::error("Error merging PDF file {$file}: " . $e->getMessage());
+            }
+        }
+        
+        return $pdf->Output('S');
+    }
+    
+    /**
+     * Create a PDF from multiple image labels
+     */
+    private function createPdfFromImages(array $imageLabels): string
+    {
+        $html = '<!DOCTYPE html><html><head><style>
+            @page { margin: 0; size: auto; }
+            body { margin: 0; padding: 0; }
+            .label-page { page-break-after: always; width: 100%; }
+            .label-page:last-child { page-break-after: auto; }
+            .label-page img { width: 100%; height: auto; display: block; }
+        </style></head><body>';
+        
+        foreach ($imageLabels as $index => $label) {
+            $base64Data = base64_encode($label['data']);
+            $mimeType = 'image/' . ($label['extension'] === 'jpg' ? 'jpeg' : $label['extension']);
+            
+            $html .= '<div class="label-page">';
+            $html .= '<img src="data:' . $mimeType . ';base64,' . $base64Data . '" alt="Label ' . ($index + 1) . '">';
+            $html .= '</div>';
+        }
+        
+        $html .= '</body></html>';
+        
+        $pdf = Pdf::loadHTML($html);
+        $pdf->setPaper('a4', 'portrait');
+        
+        return $pdf->output();
     }
 
     /**
