@@ -18,9 +18,60 @@ use Carbon\Carbon;
 use PhpOffice\PhpSpreadsheet\IOFactory;
 use Maatwebsite\Excel\Facades\Excel;
 use App\Imports\PincodeImport;
-use App\Http\Controllers\admin\DateTime;
+
 class couriercontroller extends Controller
 {
+    // Column mapping for BulkBooking - makes it easier to maintain
+    private const BOOKING_COLUMNS = [
+        'modeoftrans' => 1,
+        'forwordingno' => 2,
+        'cust_name' => 3,
+        'pickuplocation' => 4,
+        'deliverylocation' => 5,
+        'product_type' => 6,
+        'weight' => 8,
+        'vol_weight' => 9,
+        'charg_weight' => 10,
+        'client_name' => 11,
+        'pickupaddress' => 12,
+        'pickup_pincode' => 13,
+        'sendercontactno' => 14,
+        'con_client_name' => 15,
+        'receiveraddress' => 16,
+        'receiver_pincode' => 17,
+        'receivercontactno' => 18,
+        'rto_office_name' => 19,
+        'rto_address' => 20,
+        'rto_pincode' => 21,
+        'booking_date' => 22,
+        'expected_delivery_date' => 23,
+        'refrenceno' => 24,
+        'content' => 25,
+        'pices' => 26,
+        'value' => 27,
+        'invoice_no' => 28,
+        'waybills' => 29,
+        'dims' => 30,
+        'service_type' => 31,
+        'delivery_type' => 32,
+        'claimid' => 33,
+    ];
+
+    private const BOOKING_START_ROW = 4;
+    private const BOOKING_MIN_COLUMNS = 34;
+
+    // Column mapping for Bulkupdate
+    private const UPDATE_COLUMNS = [
+        'forwordingno' => 0,
+        'currentstatus' => 1,
+        'remark' => 2,
+        'status' => 3,
+        'deliverydate' => 4,
+        'expecteddeliverydate' => 5,
+    ];
+
+    private const UPDATE_START_ROW = 2;
+    private const UPDATE_MIN_COLUMNS = 6;
     /**
      * Display a listing of the resource.
      *
@@ -37,21 +88,6 @@ class couriercontroller extends Controller
             })
             ->make(true);
     }
-    
-// public function index()
-// {
-//  $datas = booking::select(['id', 'booking_date', 'created_at', 'forwordingno', 'cust_name', 'pickuplocation', 'deliverylocation', 'status',]);
-
-//     return Datatables::of($datas)
-//         ->addColumn('booking_date', function ($data) {
-//             // Format the booking_date column to include both date and time
-//             return $data->booking_date->format('Y-m-d H:i:s'); // Adjust the format as needed
-//         })
-//         ->addColumn('action', function ($data) {
-//             return view('admin.booking.actions', compact('data'))->render();
-//         })
-//         ->make(true);
-// }
 
     /**
      * Show the form for creating a new resource.
@@ -71,12 +107,11 @@ class couriercontroller extends Controller
      */
     public function store(Request $request)
     {
-      
-        $datas = booking::where('forwordingno',$request->forwordingno)->exists();
-        if($datas == "True"){
-            session()->flash('alert-warning', 'forwording no Already Exist');
+        $datas = booking::where('forwordingno', $request->forwordingno)->exists();
+        if ($datas) {
+            session()->flash('alert-warning', 'Forwarding number already exists');
             return redirect('/Admin/booking');
-            }
+        }
         $newscanpoint = new booking;
         $newscanpoint->cust_name = $request->cust_name;
         $newscanpoint->forwordingno = $request->forwordingno;
@@ -208,36 +243,7 @@ class couriercontroller extends Controller
      * @param  int  $id
      * @return \Illuminate\Http\Response
      */
-    // public function update(Request $request, $id)
-    // {
-    //     $request->validate([
-    //     'currentstatus' => 'required',
-    //     'status' => 'required',
-    //     ]);
-        
-    //     $data = booking::where('id',$id)->exists();
-     
-    //     if($data ==false){
-    //         session()->flash('alert-warning', 'Booking Not Found');
-    //         return back();
-    //         }
-    //     booking::where('id',$id)->update(['status' => $request->status]);
-    //     $newentry = new bookinglog;
-    //     $newentry->bookingno = $id;
-    //     $newentry->currentstatus = $request->currentstatus;
-    //     $newentry->createdbyy = Auth::id();
-    //     $newentry->status = $request->status;
-    //     $newentry->remark = $request->remark;
-    //     $newentry->deliverydate = $request->deliverydate;
-    //      $newentry->expecteddeliverydate = $request->expecteddeliverydate;
-    //     $newentry->save();
-    //     session()->flash('alert-success', 'Booking Updated Successfully');
-    //     return redirect('/Admin/booking');
-    // }
-    
-    
-    
-  public function update(Request $request, $id)
+    public function update(Request $request, $id)
 {
     $request->validate([
         'currentstatus' => 'required',
@@ -278,20 +284,9 @@ class couriercontroller extends Controller
      * @param  int  $id
      * @return \Illuminate\Http\Response
      */
-    // public function updateall($id)
-    // {
-        
-    //      $request->validate([
-    //     'cust_name' => 'required',
-    //     'forwordingno' => 'required',
-    //     ]);
-        
-    // }
-    
     public function updateall(Request $request, $id)
-    { 
-        // dd('new');
-    $booking = booking::findOrFail($id);
+    {
+        $booking = booking::findOrFail($id);
  
     $existingBooking = booking::where('forwordingno', $request->forwordingno)->where('id', '!=', $id)->exists();
     if ($existingBooking) {
@@ -361,718 +356,319 @@ class couriercontroller extends Controller
     return redirect('/Admin/booking');
     }
     
-    
-    
-    
-//     public function BulkPincode(Request $request)
-// {
-   
-//     $this->validateExcelUpload($request);
-     
-//     $filePath = $this->handleFileUpload($request);
-    
-//     if (!$filePath) {
-//         return redirect()->back()->with('alert-error', 'Corrupt file or data missing');
-//     }
+    public function BulkPincode(Request $request)
+    {
+        $this->validateExcelUpload($request);
 
-//     $spreadsheet = IOFactory::load($filePath);
-   
-//     $sheet = $spreadsheet->getActiveSheet();
-//     $sheetData = $this->readExcelSheet($sheet, 'A2:M');
-    
-//     $insertData = [];
-//     foreach ($sheetData as $row) {
-//         $existingRecord = DB::table('Pincode')->where('pincode', $row[0])->first();
+        $filePath = $this->handleFileUpload($request);
 
-//         if (!$existingRecord) {
-//             $insertData[] = [
-//                 'pincode' => $row[0],
-//                 'area' => $row[1],
-//                 'district' => $row[2],
-//                 'state' => $row[3],
-//                 'air-servie' => $row[4],
-//                 'edlkmair' => $row[5],
-//                 'embargo' => $row[6],
-//                 'tat-air' => $row[7],
-//                 'surface-service' => $row[8],
-//                 'edlkmsurface' => $row[9],
-//                 'tat-surface' => $row[10],
-//                 'dp-service' => $row[11],
-//                 'tatdp' => $row[12],
-//             ];
-//         }
-//     }
-//     if (!empty($insertData)) {
-//     DB::table('Pincode')->insert($insertData);
-//     }
-
-//     return redirect('/Admin/Pincode')->with('alert-success', 'Pincode data added successfully');
-// }
-
-public function BulkPincode(Request $request)
-{
-    $this->validateExcelUpload($request);
-
-    $filePath = $this->handleFileUpload($request);
-
-    if (!$filePath) {
-        return redirect()->back()->with('alert-error', 'Corrupt file or data missing');
-    }
-    Excel::import(new PincodeImport, $filePath);
-    
-    // $array = Excel::toArray([], $filePath);
-
-    // $this->processArray($array);
-    // Excel::filter('chunk')->import(new PincodeImport, $filePath, null, true, null, 'Xlsx', function ($results) {
-    //     $this->processChunk($results);
-    // });
-    
-    return redirect('/Admin/Pincode')->with('alert-success', 'Pincode data added successfully');
-}
-
-private function processChunk($results)
-{
-    $insertData = [];
-
-    foreach ($results->toArray() as $row) {
-        $existingRecord = DB::table('Pincode')->where('pincode', $row[0])->first();
-
-        if (!$existingRecord) {
-            $insertData[] = [
-                'pincode' => $row[0],
-                'area' => $row[1],
-                'district' => $row[2],
-                'state' => $row[3],
-                'air-servie' => $row[4],
-                'edlkmair' => $row[5],
-                'embargo' => $row[6],
-                'tat-air' => $row[7],
-                'surface-service' => $row[8],
-                'edlkmsurface' => $row[9],
-                'tat-surface' => $row[10],
-                'dp-service' => $row[11],
-                'tatdp' => $row[12],
-            ];
+        if (!$filePath) {
+            return redirect()->back()->with('alert-error', 'Corrupt file or data missing');
         }
+        
+        Excel::import(new PincodeImport, $filePath);
+        
+        return redirect('/Admin/Pincode')->with('alert-success', 'Pincode data added successfully');
     }
 
-    if (!empty($insertData)) {
-        DB::table('Pincode')->insert($insertData);
-    }
-}
-
-// public function BulkBooking(Request $request)
-// {
-//     $this->validateExcelUpload($request);
-//     $filePath = $this->handleFileUpload($request);
-
-//     if (!$filePath) {
-//         return redirect()->back()->with('alert-error', 'Corrupt file or data missing');
-//     }
-    
-//     $spreadsheet = IOFactory::load($filePath);
-//     $sheet = $spreadsheet->getActiveSheet();
-//     $sheetData = $this->readExcelSheet($sheet, 'A3:Z');
-//     // dd($sheetData);
-    
-//     $filteredData = [];
-// foreach ($sheetData as $rowData) {
-//     $isEmptyRow = true;
-//     foreach ($rowData as $cellData) {
-//         if (!empty($cellData)) {
-//             $isEmptyRow = false;
-//             break;
-//         }
-//     }
-//     if (!$isEmptyRow) {
-//         $filteredData[] = $rowData;
-//     }
-// }
-
-// // dd($filteredData);
-
-//     DB::beginTransaction();
-
-//     try {
-//         foreach ($filteredData as $row) {
-//             if (in_array(null, $row, true)) {
-//                 DB::rollBack();
-//                 return redirect()->back()->with('alert-error', 'Data Missing');
-//             }
-
-//             $existingRecord = Booking::where('forwordingno', $row[2])->first();
-       
-//             if (!$existingRecord) {
-//                 $newscanpoint = new booking;
-//                 $newscanpoint->cust_name = $row[3];
-//                 $newscanpoint->modeoftrans = $row[1];
-//                 $newscanpoint->forwordingno = $row[2];
-//                 $newscanpoint->pickuplocation = $row[4];
-//                 $newscanpoint->deliverylocation = $row[5];
-//                 $newscanpoint->product_type = $row[6];
-//                 $newscanpoint->weight = $row[8];
-//                 $newscanpoint->vol_weight = $row[9];
-//                 $newscanpoint->charg_weight = $row[10];
-//                 $newscanpoint->client_name = $row[11];
-//                 $newscanpoint->pickupaddress = $row[12];
-//                 // $newscanpoint->pickup_state = $row[];
-//                 // $newscanpoint->pickupcity = $row[0];
-//                 $newscanpoint->pickup_pincode = $row[13];
-//                 $newscanpoint->sendercontactno = $row[14];
-//                 $newscanpoint->con_client_name = $row[15];
-//                 $newscanpoint->receiveraddress = $row[16];
-//                 // $newscanpoint->receiverstate = $row[];
-//                 // $newscanpoint->receivercity = $row[0];
-//                 $newscanpoint->receiver_pincode = $row[17];
-//                 $newscanpoint->receivercontactno = $row[18];
-//                 $newscanpoint->refrenceno = $row[23];
-//                 $newscanpoint->content = $row[24];
-//                 $newscanpoint->status = 'Shipped';
-//                 // $newscanpoint->booking_date = date("Y-m-d H:i:s", ($row[22] - 25569) * 86400);
-//                 $dateTimestamp = ($row[22] - 25569) * 86400;
-//                 // $timeSeconds = $row[23] * 86400;
-//                 $timeSeconds = ($row[23] - floor($row[23])) * 86400;
-//                 $dateTimeTimestamp = $dateTimestamp + $timeSeconds;
-//                 $newscanpoint->booking_date = date("Y-m-d H:i:s", $dateTimeTimestamp);
-                
-//                 dd($newscanpoint);
-//                 // $newscanpoint->save();
-              
-//                 $newentry = new bookinglog;
-//                 $newentry->bookingno = $newscanpoint->id;
-//                 $newentry->currentstatus = $row[4];
-//                 $newentry->status = 'Shipped';
-//                 $newentry->remark = 'Shipped';
-//                 $newentry->deliverydate = date("Y-m-d H:i:s", (($row[22] - 25569) * 86400));
-               
-                
-//                 $newentry->createdbyy = Auth::id();
-//                 // $newentry->save();
-//             }
-//         }
-
-//         DB::commit();
-//         return redirect('/Admin/booking')->with('alert-success', 'Booking Created Successfully');
-//     } catch (\Exception $e) {
-//         DB::rollBack();
-//         return redirect()->back()->with('alert-error', 'An error occurred while processing the data.');
-//     }
-// }
-
-public function BulkBooking(Request $request)
+    public function BulkBooking(Request $request)
 { 
     try {
         $this->validateExcelUpload($request);
-         
         $filePath = $this->handleFileUpload($request);
      
         if (!$filePath) {
             return redirect()->back()->with('alert-error', 'Corrupt file or data missing');
         }
 
-        // Load spreadsheet with error handling
-        try {
-            $reader = IOFactory::createReader('Xlsx');
-            $reader->setReadDataOnly(true);
-            $spreadsheet = $reader->load($filePath);
-        } catch (\Exception $e) {
-            Log::error('BulkBooking: Failed to load spreadsheet - ' . $e->getMessage());
-            return redirect()->back()->with('alert-error', 'Failed to load Excel file: ' . $e->getMessage());
+        $sheet = $this->loadExcelSheet($filePath);
+        if (!$sheet) {
+            return redirect()->back()->with('alert-error', 'Failed to load Excel file');
         }
 
-        try {
-            $sheet = $spreadsheet->getActiveSheet();
-            $sheetData = $this->readExcelSheet($sheet, 'A4:AH');
-        } catch (\Exception $e) {
-            Log::error('BulkBooking: Failed to read sheet data - ' . $e->getMessage());
-            return redirect()->back()->with('alert-error', 'Failed to read Excel sheet: ' . $e->getMessage());
-        }
-        
-        $filteredData = [];
-        foreach ($sheetData as $rowData) {
-            $isEmptyRow = true;
-            foreach ($rowData as $cellData) {
-                if (!empty($cellData)) {
-                    $isEmptyRow = false;
-                    break;
-                }
-            }
-            if (!$isEmptyRow) {
-                $filteredData[] = $rowData;
-            }
-        }
+        $sheetData = $this->readExcelSheet($sheet, 'A' . self::BOOKING_START_ROW . ':AH');
+        $filteredData = $this->filterEmptyRows($sheetData);
         
         if (empty($filteredData)) {
             Log::warning('BulkBooking: No data found in Excel file after filtering');
-            return redirect()->back()->with('alert-error', 'No valid data found in the Excel file. Please ensure the file contains data starting from row 4.');
+            return redirect()->back()->with('alert-error', 'No valid data found in the Excel file. Please ensure the file contains data starting from row ' . self::BOOKING_START_ROW . '.');
         }
         
         Log::info('BulkBooking: Processing ' . count($filteredData) . ' rows');
         
-        DB::beginTransaction();
-
-        $processedCount = 0;
-        $skippedCount = 0; 
+        $result = $this->processBookingRows($filteredData);
         
-        foreach ($filteredData as $rowIndex => $row) {
-            $rowNumber = $rowIndex + 5; // +5 because data starts at row 4, and rowIndex is 0-based
-            
-            // Check if row has enough columns
-            if (!isset($row[33]) || count($row) < 34) {
-                DB::rollBack();
-                Log::error('BulkBooking: Insufficient columns in row ' . $rowNumber . '. Expected at least 34 columns, got ' . count($row));
-                return redirect()->back()->with('alert-error', 'Row ' . $rowNumber . ': Insufficient data columns. Expected at least 34 columns.');
-            }
-             
-            if (in_array(null, $row, true)) {
-                DB::rollBack();
-                Log::error('BulkBooking: Missing data in row ' . $rowNumber);
-                return redirect()->back()->with('alert-error', 'Row ' . $rowNumber . ': Data Missing. Please ensure all required fields are filled.');
-            } 
-            
-            $existingRecord = Booking::where('forwordingno', $row[2])->first();
-       
-            if (!$existingRecord) {
-                $processedCount++;
-                
-                $newscanpoint = new Booking;
-                $newscanpoint->cust_name = $row[3];
-                $newscanpoint->modeoftrans = $row[1];
-                $newscanpoint->forwordingno = $row[2];
-                $newscanpoint->pickuplocation = $row[4];
-                $newscanpoint->deliverylocation = $row[5];
-                $newscanpoint->product_type = $row[6];
-                $newscanpoint->weight = $this->cleanNumericValue($row[8]);
-                $newscanpoint->vol_weight = $this->cleanNumericValue($row[9]);
-                $newscanpoint->charg_weight = $this->cleanNumericValue($row[10]);
-                $newscanpoint->client_name = $row[11];
-                $newscanpoint->pickupaddress = $row[12];
-                $newscanpoint->pickup_pincode = $row[13];
-                $newscanpoint->sendercontactno = $row[14];
-                $newscanpoint->con_client_name = $row[15];
-                $newscanpoint->receiveraddress = $row[16];
-                $newscanpoint->receiver_pincode = $row[17];
-                $newscanpoint->receivercontactno = $row[18];
-                $newscanpoint->rto_office_name = $row[19];
-                $newscanpoint->rto_address = $row[20];
-                $newscanpoint->rto_pincode = $row[21];
-                $newscanpoint->refrenceno = $row[24];
-                $newscanpoint->content = $row[25];
-                $newscanpoint->pices = $this->cleanNumericValue($row[26]);
-                // Clean value field - remove newlines and extract first numeric value
-                $newscanpoint->value = $this->cleanNumericValue($row[27]);
-                $newscanpoint->invoice_no = $row[28];
-                $newscanpoint->waybills = $row[29];
-                $newscanpoint->dims = $row[30];
-                $newscanpoint->service_type = $row[31];
-                $newscanpoint->delivery_type = $row[32];
-                $newscanpoint->claimid = $row[33];
-                $newscanpoint->status = 'Booked';
-                
-                // Parse booking date with error handling
-                try {
-                    if (empty($row[22])) {
-                        throw new \Exception('Booking date is empty');
-                    }
-                    $bookingDateTime = Carbon::createFromFormat('d/m/Y H:i:s', $row[22])->format('Y-m-d H:i:s');
-                } catch (\Exception $dateError) {
-                    DB::rollBack();
-                    Log::error('BulkBooking: Invalid booking date format in row ' . $rowNumber . '. Value: ' . ($row[22] ?? 'empty') . '. Error: ' . $dateError->getMessage());
-                    return redirect()->back()->with('alert-error', 'Row ' . $rowNumber . ': Invalid booking date format. Expected format: dd/mm/yyyy HH:mm:ss. Found: ' . ($row[22] ?? 'empty'));
-                }
-                
-                $newscanpoint->booking_date = $bookingDateTime;
-                $newscanpoint->pickupcity = Pincode::where('pincode',$row[13])->value('district');
-                $recPincodeData = Pincode::where('pincode', $row[17])->first();
-                
-                if ($recPincodeData) {
-                    $newscanpoint->receivercity = $recPincodeData->district;
-                    $newscanpoint->receiverstate = $recPincodeData->state;
-                } else {
-                    $newscanpoint->receivercity = '';
-                    $newscanpoint->receiverstate = '';
-                }
-                
-                try {
-                    $newscanpoint->save();
-                } catch (\Exception $saveError) {
-                    DB::rollBack();
-                    $errorMessage = $saveError->getMessage();
-                    
-                    // Provide more helpful message for data truncation errors
-                    if (strpos($errorMessage, 'Data truncated') !== false) {
-                        $fieldName = 'unknown field';
-                        if (strpos($errorMessage, "column 'value'") !== false) {
-                            $fieldName = 'value';
-                            $errorMessage = 'Value field contains invalid data (possibly multiple lines). Original value: ' . ($row[27] ?? 'empty');
-                        } elseif (strpos($errorMessage, "column 'weight'") !== false) {
-                            $fieldName = 'weight';
-                            $errorMessage = 'Weight field contains invalid data. Original value: ' . ($row[8] ?? 'empty');
-                        } elseif (preg_match("/column '([^']+)'/", $errorMessage, $matches)) {
-                            $fieldName = $matches[1];
-                            $errorMessage = "Field '{$fieldName}' contains invalid data that cannot be stored.";
-                        }
-                    }
-                    
-                    Log::error('BulkBooking: Failed to save booking in row ' . $rowNumber . '. Forwarding No: ' . ($row[2] ?? 'N/A') . '. Error: ' . $saveError->getMessage() . ' | Full trace: ' . $saveError->getTraceAsString());
-                    return redirect()->back()->with('alert-error', 'Row ' . $rowNumber . ': Failed to save booking. ' . $errorMessage);
-                }
-               
-                $newentry = new bookinglog;
-                $newentry->bookingno = $newscanpoint->id;
-                $newentry->currentstatus = $row[4];
-                $newentry->status = 'Booked';
-                $newentry->remark = 'Booked';
-                $newentry->deliverydate = $bookingDateTime;
-                $newentry->createdbyy = Auth::id();
-                
-                // Parse expected delivery date with error handling
-                try {
-                    if (empty($row[23])) {
-                        throw new \Exception('Expected delivery date is empty');
-                    }
-                    $newentry->expecteddeliverydate = Carbon::createFromFormat('d/m/Y', $row[23]);
-                } catch (\Exception $dateError) {
-                    DB::rollBack();
-                    Log::error('BulkBooking: Invalid expected delivery date format in row ' . $rowNumber . '. Value: ' . ($row[23] ?? 'empty') . '. Error: ' . $dateError->getMessage());
-                    return redirect()->back()->with('alert-error', 'Row ' . $rowNumber . ': Invalid expected delivery date format. Expected format: dd/mm/yyyy. Found: ' . ($row[23] ?? 'empty'));
-                }
-                
-                try {
-                    $newentry->save();
-                } catch (\Exception $saveError) {
-                    DB::rollBack();
-                    Log::error('BulkBooking: Failed to save booking log in row ' . $rowNumber . '. Error: ' . $saveError->getMessage());
-                    return redirect()->back()->with('alert-error', 'Row ' . $rowNumber . ': Failed to save booking log. Error: ' . $saveError->getMessage());
-                }
-            } else {
-                $skippedCount++;
-                Log::info('BulkBooking: Skipping row ' . $rowNumber . ' - Forwarding No ' . ($row[2] ?? 'N/A') . ' already exists');
-            }
-        }
- 
-        DB::commit();
-        
-        $message = 'Booking processing completed. ';
-        if ($processedCount > 0) {
-            $message .= $processedCount . ' booking(s) created. ';
-        }
-        if ($skippedCount > 0) {
-            $message .= $skippedCount . ' booking(s) skipped (already exist).';
-        }
-        if ($processedCount == 0 && $skippedCount == 0) {
-            $message = 'No bookings were processed. Please check your data.';
+        // Check if processing failed (error message returned)
+        if (isset($result['processed']) && $result['processed'] == 0 && isset($result['skipped']) && $result['skipped'] == 0) {
+            return redirect()->back()->with('alert-error', $result['message']);
         }
         
-        Log::info('BulkBooking: Completed - Processed: ' . $processedCount . ', Skipped: ' . $skippedCount);
-        return redirect('/Admin/booking')->with('alert-success', $message);
+        return redirect('/Admin/booking')->with('alert-success', $result['message']);
         
     } catch (\Carbon\Exceptions\InvalidFormatException $e) {
-        if (DB::transactionLevel() > 0) {
-            DB::rollBack();
-        }
-        Log::error('BulkBooking: Date format error - ' . $e->getMessage() . ' | Trace: ' . $e->getTraceAsString());
+        $this->rollbackTransaction();
+        Log::error('BulkBooking: Date format error - ' . $e->getMessage());
         return redirect()->back()->with('alert-error', 'Date format error: ' . $e->getMessage() . '. Please check your date formats (dd/mm/yyyy for dates, dd/mm/yyyy HH:mm:ss for date-time).');
     } catch (\Illuminate\Database\QueryException $e) {
-        if (DB::transactionLevel() > 0) {
-            DB::rollBack();
-        }
-        Log::error('BulkBooking: Database error - ' . $e->getMessage() . ' | SQL: ' . ($e->getSql() ?? 'N/A'));
+        $this->rollbackTransaction();
+        Log::error('BulkBooking: Database error - ' . $e->getMessage());
         return redirect()->back()->with('alert-error', 'Database error: ' . $e->getMessage() . '. Please check your data and try again.');
     } catch (\Exception $e) { 
-        if (DB::transactionLevel() > 0) {
-            DB::rollBack();
-        }
-        Log::error('BulkBooking: Unexpected error - ' . $e->getMessage() . ' | File: ' . $e->getFile() . ' | Line: ' . $e->getLine() . ' | Trace: ' . $e->getTraceAsString());
+        $this->rollbackTransaction();
+        Log::error('BulkBooking: Unexpected error - ' . $e->getMessage() . ' | File: ' . $e->getFile() . ' | Line: ' . $e->getLine());
         return redirect()->back()->with('alert-error', 'Error occurred: ' . $e->getMessage() . '. Please check the logs for more details.');
     }
 }
 
-
-// public function Bulkupdate(Request $request)
-// {
-//     $this->validateExcelUpload($request);
-
-//     $filePath = $this->handleFileUpload($request);
-
-//     if (!$filePath) {
-//         return redirect()->back()->with('alert-error', 'Corrupt file or data missing');
-//     }
-
-//     $spreadsheet = IOFactory::load($filePath);
-//     $sheet = $spreadsheet->getActiveSheet();
-//     $sheetData = $this->readExcelSheet($sheet, 'A2:E');
-
-
-// $filteredData = [];
-//     foreach ($sheetData as $rowData) {
-//         $isEmptyRow = true;
-//         foreach ($rowData as $cellData) {
-//             if (!empty($cellData)) {
-//                 $isEmptyRow = false;
-//                 break;
-//             }
-//         }
-//         if (!$isEmptyRow) {
-//             $filteredData[] = $rowData;
-//         }
-//     }
-  
-//     DB::beginTransaction();
-
-//     try {
-//         foreach ($filteredData as $row) {
-//             if (in_array(null, $row, true)) {
-//                 DB::rollBack();
-//                 return redirect()->back()->with('alert-error', 'Data Missing');
-//             }
-
-//             $existingRecord = Booking::where('forwordingno', $row[0])
-//             ->where('status', '!=', 'Delivered')
-//             ->first();
-              
-//             if ($existingRecord) {
-//                 Booking::where('forwordingno', $row[0])->update(['status' => $row[3]]);
-                 
-//                 $newentry = new bookinglog;
-//                 $newentry->bookingno = $existingRecord->id;
-//                 $newentry->currentstatus = $row[1];
-//                 $newentry->createdbyy = Auth::id();
-//                 $newentry->status = $row[3];
-//                 $newentry->remark = $row[2];
-//                 $newentry->deliverydate =Carbon::createFromFormat('d/m/Y H:i:s', $row[4])->format('Y-m-d H:i:s');
-//                 $newentry->save();
-//             }
-//         }
-
-//         DB::commit();
-//         return redirect('/Admin/booking')->with('alert-success', 'Booking Updated Successfully');
-//     } catch (\Exception $e) {
-//         DB::rollBack();
-//         return redirect()->back()->with('alert-error', 'An error occurred while processing the data.');
-//     }
-// }
-
-
-public function Bulkupdate(Request $request)
+    public function Bulkupdate(Request $request)
 {
-    $this->validateExcelUpload($request);
-
-    $filePath = $this->handleFileUpload($request);
-
-    if (!$filePath) {
-        return redirect()->back()->with('alert-error', 'Corrupt file or data missing');
-    }
-
     try {
-        $spreadsheet = IOFactory::load($filePath);
-        $sheet = $spreadsheet->getActiveSheet();
-        $sheetData = $this->readExcelSheet($sheet, 'A2:F');
+        $this->validateExcelUpload($request);
+        $filePath = $this->handleFileUpload($request);
+
+        if (!$filePath) {
+            return redirect()->back()->with('alert-error', 'Corrupt file or data missing');
+        }
+
+        $sheet = $this->loadExcelSheet($filePath);
+        if (!$sheet) {
+            return redirect()->back()->with('alert-error', 'Failed to load Excel file');
+        }
+
+        $sheetData = $this->readExcelSheet($sheet, 'A' . self::UPDATE_START_ROW . ':F');
+        $filteredData = $this->filterEmptyRows($sheetData);
+
+        if (empty($filteredData)) {
+            return redirect()->back()->with('alert-error', 'No valid data found in the Excel file.');
+        }
+
+        $result = $this->processUpdateRows($filteredData);
+        
+        if (!$result['success']) {
+            return redirect()->back()->with('alert-error', $result['message']);
+        }
+
+        return redirect('/Admin/booking')->with('alert-success', $result['message']);
+        
     } catch (\Exception $e) {
-        Log::error('Error loading spreadsheet: ' . $e->getMessage());
-        return redirect()->back()->with('alert-error', 'Error loading spreadsheet.');
+        $this->rollbackTransaction();
+        Log::error('Bulkupdate: Error - ' . $e->getMessage());
+        return redirect()->back()->with('alert-error', 'An error occurred while processing the data: ' . $e->getMessage());
     }
+}
 
-    $filteredData = [];
-    foreach ($sheetData as $rowData) {
-        $isEmptyRow = true;
-        foreach ($rowData as $cellData) {
-            if (!empty($cellData)) {
-                $isEmptyRow = false;
-                break;
-            }
-        }
-        if (!$isEmptyRow) {
-            $filteredData[] = $rowData;
-        }
-    }
-    
-
+/**
+ * Process update rows from Excel data
+ */
+private function processUpdateRows(array $filteredData): array
+{
     DB::beginTransaction();
     
+    $updatedCount = 0;
+    $skippedCount = 0;
+    
     try {
-        foreach ($filteredData as $row) {
-            // Log each row for debugging
-            Log::info('Processing row: ' . json_encode($row));
-               
-            if (in_array(null, $row, true)) {
+        foreach ($filteredData as $rowIndex => $row) {
+            $rowNumber = $rowIndex + self::UPDATE_START_ROW + 1;
+            
+            // Validate row structure
+            if (count($row) < self::UPDATE_MIN_COLUMNS) {
                 DB::rollBack();
-                return redirect()->back()->with('alert-error', 'Data Missing');
+                return [
+                    'success' => false,
+                    'message' => "Row {$rowNumber}: Insufficient data columns. Expected at least " . self::UPDATE_MIN_COLUMNS . " columns."
+                ];
+            }
+            
+            // Check for required fields
+            $forwordingno = $row[self::UPDATE_COLUMNS['forwordingno']] ?? null;
+            $status = $row[self::UPDATE_COLUMNS['status']] ?? null;
+            
+            if (empty($forwordingno) || empty($status)) {
+                DB::rollBack();
+                return [
+                    'success' => false,
+                    'message' => "Row {$rowNumber}: Required fields (Forwarding No or Status) are missing."
+                ];
             }
 
-            $existingRecord = Booking::where('forwordingno', $row[0])
+            $existingRecord = booking::where('forwordingno', $forwordingno)
                 ->where('status', '!=', 'Delivered')
                 ->first();
                  
             if ($existingRecord) {
-                Booking::where('id', $existingRecord->id)->update(['status' => $row[3]]);
+                // Update booking status
+                booking::where('id', $existingRecord->id)->update(['status' => $status]);
                 
-                // $newentry = new BookingLog;
-                // $newentry->bookingno = $existingRecord->id;
-                // $newentry->currentstatus = $row[1];
-                // $newentry->createdby = Auth::id();
-                // $newentry->status = $row[3];
-                // $newentry->remark = $row[2];
-                //  $newentry->deliverydate = null;
-                // // Validate and format date
-               
-
-                // $newentry->save();
+                // Parse dates
+                $deliveryDate = $this->parseExcelDate($row[self::UPDATE_COLUMNS['deliverydate']] ?? null);
+                $expectedDeliveryDate = $this->parseExcelDate($row[self::UPDATE_COLUMNS['expecteddeliverydate']] ?? null);
                 
-                if (is_numeric($row[4])) {
-    // Convert Excel serial date-time to PHP DateTime
-    $excelStartDate = Carbon::create(1899, 12, 30); // Excel's base date for serials
-    $date = $excelStartDate->addDays(floor($row[4]))
-                                           ->addSeconds(($row[4] - floor($row[4])) * 86400) // Add time portion
-                                           ->format('Y-m-d H:i:s');
-} else {
-    // Handle as a normal string date
-    try {
-        $date= Carbon::createFromFormat('d/m/Y H:i:s', $row[4])->format('Y-m-d H:i:s');
-    } catch (\Exception $e) {
-        $date = null; // Set to null if invalid
-    }
-}
- if (is_numeric($row[5])) {
-    // Convert Excel serial date-time to PHP DateTime
-    $excelStartDate2 = Carbon::create(1899, 12, 30); // Excel's base date for serials
-    $date2 = $excelStartDate2->addDays(floor($row[5]))
-                                           ->addSeconds(($row[5] - floor($row[5])) * 86400) // Add time portion
-                                           ->format('Y-m-d H:i:s');
-} else {
-    // Handle as a normal string date
-    try {
-        $date2= Carbon::createFromFormat('d/m/Y H:i:s', $row[5])->format('Y-m-d H:i:s');
-    } catch (\Exception $e) {
-        $date2 = null; // Set to null if invalid
-    }
-}
-
-                $data = [
-    'bookingno' => $existingRecord->id,
-    'currentstatus' => $row[1],
-    'createdbyy' => Auth::id(),
-    'status' => $row[3],
-    'remark' => $row[2],
-    'expecteddeliverydate' => $date2,
-    'deliverydate' =>$date,
-    'created_at' => now(), // Add timestamps if your table has them
-    'updated_at' => now(),
-     
-];
-DB::table('bookinglog')->insert($data);
+                // Create booking log entry
+                DB::table('bookinglog')->insert([
+                    'bookingno' => $existingRecord->id,
+                    'currentstatus' => $row[self::UPDATE_COLUMNS['currentstatus']] ?? null,
+                    'createdbyy' => Auth::id(),
+                    'status' => $status,
+                    'remark' => $row[self::UPDATE_COLUMNS['remark']] ?? null,
+                    'expecteddeliverydate' => $expectedDeliveryDate,
+                    'deliverydate' => $deliveryDate,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                
+                $updatedCount++;
+            } else {
+                $skippedCount++;
+                Log::info("Bulkupdate: Skipping row {$rowNumber} - Forwarding No {$forwordingno} not found or already delivered");
             }
         }
 
         DB::commit();
-        return redirect('/Admin/booking')->with('alert-success', 'Booking Updated Successfully');
+        
+        $message = "Booking update completed. {$updatedCount} booking(s) updated.";
+        if ($skippedCount > 0) {
+            $message .= " {$skippedCount} booking(s) skipped.";
+        }
+        
+        return ['success' => true, 'message' => $message];
+        
     } catch (\Exception $e) {
         DB::rollBack();
-        Log::error('Error during bulk update: ' . $e->getMessage());
-        return redirect()->back()->with('alert-error', 'An error occurred while processing the data.');
+        Log::error('Bulkupdate: Processing error - ' . $e->getMessage());
+        return ['success' => false, 'message' => 'Error processing data: ' . $e->getMessage()];
     }
 }
 
-  
- 
-
+/**
+ * Parse Excel date (handles both Excel serial dates and string dates)
+ */
+private function parseExcelDate($value): ?string
+{
+    if (empty($value)) {
+        return null;
+    }
+    
+    // Check if it's an Excel serial date (numeric)
+    if (is_numeric($value)) {
+        try {
+            $excelStartDate = Carbon::create(1899, 12, 30);
+            return $excelStartDate->addDays(floor($value))
+                ->addSeconds(($value - floor($value)) * 86400)
+                ->format('Y-m-d H:i:s');
+        } catch (\Exception $e) {
+            Log::warning('Failed to parse Excel serial date: ' . $value);
+            return null;
+        }
+    }
+    
+    // Try to parse as string date
+    $formats = ['d/m/Y H:i:s', 'd/m/Y H:i', 'd/m/Y', 'Y-m-d H:i:s', 'Y-m-d'];
+    
+    foreach ($formats as $format) {
+        try {
+            return Carbon::createFromFormat($format, $value)->format('Y-m-d H:i:s');
+        } catch (\Exception $e) {
+            continue;
+        }
+    }
+    
+    Log::warning('Failed to parse date: ' . $value);
+    return null;
+}
 
 
 public function bulkreport(Request $request)
-    {
-
-    if ($request->forwordingno != null) {
-
-        $forwordingno = preg_replace('/\s+/', '', $request->forwordingno);
-        $split = explode(",", $forwordingno);
-        $datas = booking::whereIn('forwordingno', $split)->get();
-    } else {
-        $this->validateExcelUpload($request);
-        $filePath = $this->handleFileUpload($request);
-        if (!$filePath) {
-            return redirect()->back()->with('alert-error', 'Corrupt file or data missing');
-        }
-        $spreadsheet = IOFactory::load($filePath);
-        $sheet = $spreadsheet->getActiveSheet();
-        
-        $endRow = $sheet->getHighestRow();
-        $range = 'A' . '2:' . 'A' . $endRow;
-        $sheetData = $sheet->rangeToArray($range, null, true, false);
-        // dd($sheetData);
-        $datas = booking::whereIn('forwordingno', $sheetData)->get();
+{
+    $datas = $this->getBookingsFromRequest($request);
     
-        
+    if ($datas === null) {
+        return redirect()->back()->with('alert-error', 'Failed to process request. Please provide forwarding numbers or upload a valid Excel file.');
     }
 
     return view('admin/booking/Bulkinvoice', compact('datas'));
-    }
+}
     
-    public function bulksticker(Request $request)
-    {
-      
-
-    if ($request->forwordingno != null) {
-
-        $forwordingno = preg_replace('/\s+/', '', $request->forwordingno);
-        $split = explode(",", $forwordingno);
-        $datas = booking::whereIn('forwordingno', $split)->get();
-    } else {
-        $this->validateExcelUpload($request);
-        $filePath = $this->handleFileUpload($request);
-        if (!$filePath) {
-            return redirect()->back()->with('alert-error', 'Corrupt file or data missing');
-        }
-        $spreadsheet = IOFactory::load($filePath);
-        $sheet = $spreadsheet->getActiveSheet();
-        
-        $endRow = $sheet->getHighestRow();
-        $range = 'A' . '2:' . 'A' . $endRow;
-        $sheetData = $sheet->rangeToArray($range, null, true, false);
-        // dd($sheetData);
-        $datas = booking::whereIn('forwordingno', $sheetData)->get();
+public function bulksticker(Request $request)
+{
+    $datas = $this->getBookingsFromRequest($request);
     
-        
+    if ($datas === null) {
+        return redirect()->back()->with('alert-error', 'Failed to process request. Please provide forwarding numbers or upload a valid Excel file.');
     }
       
     return view('admin/bulkreport/bulksticker', compact('datas'));
-    }
-    
-    
-    public function bulkreportwaree(Request $request)
-    {
+}
 
-    if ($request->forwordingno != null) {
-
-        $forwordingno = preg_replace('/\s+/', '', $request->forwordingno);
-        $split = explode(",", $forwordingno);
-        $datas = booking::whereIn('forwordingno', $split)->get();
-    } else {
-        $this->validateExcelUpload($request);
-        $filePath = $this->handleFileUpload($request);
-        if (!$filePath) {
-            return redirect()->back()->with('alert-error', 'Corrupt file or data missing');
-        }
-        $spreadsheet = IOFactory::load($filePath);
-        $sheet = $spreadsheet->getActiveSheet();
-        
-        $endRow = $sheet->getHighestRow();
-        $range = 'A' . '2:' . 'A' . $endRow;
-        $sheetData = $sheet->rangeToArray($range, null, true, false);
-        // dd($sheetData);
-        $datas = booking::whereIn('forwordingno', $sheetData)->get();
+public function bulkreportwaree(Request $request)
+{
+    $datas = $this->getBookingsFromRequest($request);
     
-        
+    if ($datas === null) {
+        return redirect()->back()->with('alert-error', 'Failed to process request. Please provide forwarding numbers or upload a valid Excel file.');
     }
 
     return view('admin/booking/wareebulkinvoice', compact('datas'));
-    }
-public function client_api_logs()
-{
-    // Fetch all API logs (you can add ->orderBy(), ->paginate(), etc. as needed)
-    // $datas = ApiLog::orderBy('created_at', 'desc')->get();
-
-    return view('admin.booking.wareeapilogs');
 }
+
+/**
+ * Get bookings from request (either from text input or Excel file)
+ */
+private function getBookingsFromRequest(Request $request)
+{
+    if (!empty($request->forwordingno)) {
+        // Get from comma-separated text input
+        $forwordingno = preg_replace('/\s+/', '', $request->forwordingno);
+        $split = array_filter(explode(",", $forwordingno));
+        
+        if (empty($split)) {
+            return null;
+        }
+        
+        return booking::whereIn('forwordingno', $split)->get();
+    }
+    
+    // Get from Excel file
+    try {
+        $this->validateExcelUpload($request);
+        $filePath = $this->handleFileUpload($request);
+        
+        if (!$filePath) {
+            return null;
+        }
+        
+        $sheet = $this->loadExcelSheet($filePath);
+        if (!$sheet) {
+            return null;
+        }
+        
+        $endRow = $sheet->getHighestRow();
+        $range = 'A2:A' . $endRow;
+        $sheetData = $sheet->rangeToArray($range, null, true, false);
+        
+        // Flatten array and filter empty values
+        $forwordingnos = [];
+        foreach ($sheetData as $row) {
+            if (!empty($row[0])) {
+                $forwordingnos[] = trim($row[0]);
+            }
+        }
+        
+        if (empty($forwordingnos)) {
+            return null;
+        }
+        
+        return booking::whereIn('forwordingno', $forwordingnos)->get();
+        
+    } catch (\Exception $e) {
+        Log::error('getBookingsFromRequest: Error - ' . $e->getMessage());
+        return null;
+    }
+}
+    public function client_api_logs()
+    {
+        return view('admin.booking.wareeapilogs');
+    }
 public function clientApiLogsAjax()
 {
     $query = ApiLog::select(['id','code' ,'displayOrderCode', 'channel', 'notificationMobile', 'status', 'displayOrderDateTime', 'created', 'created_at']);
@@ -1140,4 +736,417 @@ private function readExcelSheet($sheet, $range, $headerRow = 1)
     
     return $sheet->rangeToArray($range, null, true, false);
 }
+
+/**
+ * Load Excel sheet from file path
+ */
+private function loadExcelSheet($filePath)
+{
+    try {
+        $reader = IOFactory::createReader('Xlsx');
+        $reader->setReadDataOnly(true);
+        $spreadsheet = $reader->load($filePath);
+        return $spreadsheet->getActiveSheet();
+    } catch (\Exception $e) {
+        Log::error('Failed to load spreadsheet - ' . $e->getMessage());
+        return null;
+    }
 }
+
+/**
+ * Filter out empty rows from Excel data
+ */
+private function filterEmptyRows(array $sheetData): array
+{
+    $filteredData = [];
+    foreach ($sheetData as $rowData) {
+        if (!$this->isEmptyRow($rowData)) {
+            $filteredData[] = $rowData;
+        }
+    }
+    return $filteredData;
+}
+
+/**
+ * Check if a row is empty
+ */
+private function isEmptyRow(array $row): bool
+{
+    foreach ($row as $cellData) {
+        if (!empty($cellData)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * Process booking rows from Excel data
+ */
+private function processBookingRows(array $filteredData): array
+{
+    DB::beginTransaction();
+    
+    $processedCount = 0;
+    $skippedCount = 0;
+    
+    foreach ($filteredData as $rowIndex => $row) {
+        $rowNumber = $rowIndex + self::BOOKING_START_ROW + 1;
+        
+        // Validate row structure
+        $validation = $this->validateBookingRow($row, $rowNumber);
+        if (!$validation['valid']) {
+            DB::rollBack();
+            return ['message' => $validation['error'], 'processed' => 0, 'skipped' => 0];
+        }
+        
+        $forwordingno = $row[self::BOOKING_COLUMNS['forwordingno']];
+        $existingRecord = booking::where('forwordingno', $forwordingno)->first();
+        
+        if ($existingRecord) {
+            $skippedCount++;
+            Log::info("BulkBooking: Skipping row {$rowNumber} - Forwarding No {$forwordingno} already exists");
+            continue;
+        }
+        
+        try {
+            $booking = $this->createBookingFromRow($row, $rowNumber);
+            $this->createBookingLog($booking, $row, $rowNumber);
+            $processedCount++;
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error("BulkBooking: Failed to process row {$rowNumber} - " . $e->getMessage());
+            return ['message' => "Row {$rowNumber}: " . $e->getMessage(), 'processed' => 0, 'skipped' => 0];
+        }
+    }
+    
+    DB::commit();
+    
+    $message = $this->buildProcessingMessage($processedCount, $skippedCount);
+    Log::info("BulkBooking: Completed - Processed: {$processedCount}, Skipped: {$skippedCount}");
+    
+    return ['message' => $message, 'processed' => $processedCount, 'skipped' => $skippedCount];
+}
+
+/**
+ * Validate booking row structure and data
+ */
+private function validateBookingRow(array $row, int $rowNumber): array
+{
+    if (count($row) < self::BOOKING_MIN_COLUMNS) {
+        return [
+            'valid' => false,
+            'error' => "Row {$rowNumber}: Insufficient data columns. Expected at least " . self::BOOKING_MIN_COLUMNS . " columns, got " . count($row) . "."
+        ];
+    }
+    
+    // Check for required fields (non-null)
+    $requiredFields = ['forwordingno', 'cust_name', 'pickuplocation', 'deliverylocation'];
+    foreach ($requiredFields as $field) {
+        $colIndex = self::BOOKING_COLUMNS[$field];
+        if (empty($row[$colIndex])) {
+            return [
+                'valid' => false,
+                'error' => "Row {$rowNumber}: Required field '{$field}' is missing or empty."
+            ];
+        }
+    }
+    
+    // Validate booking date is not more than 3 days old
+    $bookingDateValue = $row[self::BOOKING_COLUMNS['booking_date']] ?? null;
+    if (!empty($bookingDateValue)) {
+        try {
+            $bookingDate = $this->parseBookingDateForValidation($bookingDateValue);
+            $threeDaysAgo = Carbon::now()->subDays(3)->startOfDay();
+            
+            // Check if booking date is older than 3 days (not including exactly 3 days ago)
+            if ($bookingDate->lt($threeDaysAgo)) {
+                $formattedDate = $bookingDate->format('d/m/Y H:i:s');
+                $today = Carbon::now()->format('d/m/Y');
+                return [
+                    'valid' => false,
+                    'error' => "Row {$rowNumber}: Booking date ({$formattedDate}) is more than 3 days old. Only bookings from the last 3 days (from {$today}) are allowed."
+                ];
+            }
+        } catch (\Exception $e) {
+            // If date parsing fails, let it fail later in createBookingFromRow
+            // We'll just skip this validation if the date format is invalid
+        }
+    }
+    
+    return ['valid' => true];
+}
+
+/**
+ * Create booking from Excel row data
+ */
+private function createBookingFromRow(array $row, int $rowNumber): booking
+{
+    $booking = new booking;
+    
+    // Map all fields using column constants
+    $booking->modeoftrans = $row[self::BOOKING_COLUMNS['modeoftrans']] ?? null;
+    $booking->forwordingno = $row[self::BOOKING_COLUMNS['forwordingno']];
+    $booking->cust_name = $row[self::BOOKING_COLUMNS['cust_name']];
+    $booking->pickuplocation = $row[self::BOOKING_COLUMNS['pickuplocation']];
+    $booking->deliverylocation = $row[self::BOOKING_COLUMNS['deliverylocation']];
+    $booking->product_type = $row[self::BOOKING_COLUMNS['product_type']] ?? null;
+    $booking->weight = $this->cleanNumericValue($row[self::BOOKING_COLUMNS['weight']] ?? null);
+    $booking->vol_weight = $this->cleanNumericValue($row[self::BOOKING_COLUMNS['vol_weight']] ?? null);
+    $booking->charg_weight = $this->cleanNumericValue($row[self::BOOKING_COLUMNS['charg_weight']] ?? null);
+    $booking->client_name = $row[self::BOOKING_COLUMNS['client_name']] ?? null;
+    $booking->pickupaddress = $row[self::BOOKING_COLUMNS['pickupaddress']] ?? null;
+    $booking->pickup_pincode = $row[self::BOOKING_COLUMNS['pickup_pincode']] ?? null;
+    $booking->sendercontactno = $row[self::BOOKING_COLUMNS['sendercontactno']] ?? null;
+    $booking->con_client_name = $row[self::BOOKING_COLUMNS['con_client_name']] ?? null;
+    $booking->receiveraddress = $row[self::BOOKING_COLUMNS['receiveraddress']] ?? null;
+    $booking->receiver_pincode = $row[self::BOOKING_COLUMNS['receiver_pincode']] ?? null;
+    $booking->receivercontactno = $row[self::BOOKING_COLUMNS['receivercontactno']] ?? null;
+    $booking->rto_office_name = $row[self::BOOKING_COLUMNS['rto_office_name']] ?? null;
+    $booking->rto_address = $row[self::BOOKING_COLUMNS['rto_address']] ?? null;
+    $booking->rto_pincode = $row[self::BOOKING_COLUMNS['rto_pincode']] ?? null;
+    $booking->refrenceno = $row[self::BOOKING_COLUMNS['refrenceno']] ?? null;
+    $booking->content = $row[self::BOOKING_COLUMNS['content']] ?? null;
+    $booking->pices = $this->cleanNumericValue($row[self::BOOKING_COLUMNS['pices']] ?? null);
+    $booking->value = $this->cleanNumericValue($row[self::BOOKING_COLUMNS['value']] ?? null);
+    $booking->invoice_no = $row[self::BOOKING_COLUMNS['invoice_no']] ?? null;
+    $booking->waybills = $row[self::BOOKING_COLUMNS['waybills']] ?? null;
+    $booking->dims = $row[self::BOOKING_COLUMNS['dims']] ?? null;
+    $booking->service_type = $row[self::BOOKING_COLUMNS['service_type']] ?? null;
+    $booking->delivery_type = $row[self::BOOKING_COLUMNS['delivery_type']] ?? null;
+    $booking->claimid = $row[self::BOOKING_COLUMNS['claimid']] ?? null;
+    $booking->status = 'Booked';
+    
+    // Parse and set booking date
+    $bookingDateValue = $row[self::BOOKING_COLUMNS['booking_date']] ?? null;
+    if (empty($bookingDateValue)) {
+        throw new \Exception('Booking date is required');
+    }
+    $booking->booking_date = $this->parseDateTime($bookingDateValue, 'd/m/Y H:i:s', $rowNumber, 'booking date');
+    
+    // Set city and state from pincode before saving
+    $this->setLocationFromPincode($booking, $row);
+    
+    $booking->save();
+    
+    return $booking;
+}
+
+/**
+ * Set pickup and receiver city/state from pincode
+ */
+private function setLocationFromPincode(booking $booking, array $row): void
+{
+    // Set pickup city
+    if (!empty($booking->pickup_pincode)) {
+        $pickupPincodeData = Pincode::where('pincode', $booking->pickup_pincode)->first();
+        $booking->pickupcity = $pickupPincodeData ? $pickupPincodeData->district : null;
+    }
+    
+    // Set receiver city and state
+    if (!empty($booking->receiver_pincode)) {
+        $receiverPincodeData = Pincode::where('pincode', $booking->receiver_pincode)->first();
+        if ($receiverPincodeData) {
+            $booking->receivercity = $receiverPincodeData->district;
+            $booking->receiverstate = $receiverPincodeData->state;
+        } else {
+            $booking->receivercity = null;
+            $booking->receiverstate = null;
+        }
+    }
+}
+
+/**
+ * Create booking log entry
+ */
+private function createBookingLog(booking $booking, array $row, int $rowNumber): void
+{
+    $bookingLog = new bookinglog;
+    $bookingLog->bookingno = $booking->id;
+    $bookingLog->currentstatus = $row[self::BOOKING_COLUMNS['pickuplocation']];
+    $bookingLog->status = 'Booked';
+    $bookingLog->remark = 'Booked';
+    $bookingLog->deliverydate = $booking->booking_date;
+    $bookingLog->createdbyy = Auth::id();
+    
+    // Parse expected delivery date
+    $expectedDateValue = $row[self::BOOKING_COLUMNS['expected_delivery_date']] ?? null;
+    if (!empty($expectedDateValue)) {
+        $bookingLog->expecteddeliverydate = $this->parseDate($expectedDateValue, 'd/m/Y', $rowNumber, 'expected delivery date');
+    }
+    
+    $bookingLog->save();
+}
+
+/**
+ * Parse booking date for validation (returns Carbon instance)
+ * Handles both Excel serial dates and string date formats
+ */
+private function parseBookingDateForValidation($value): Carbon
+{
+    if (empty($value)) {
+        throw new \Exception('Booking date is empty');
+    }
+    
+    // Check if it's an Excel serial date (numeric)
+    if (is_numeric($value)) {
+        try {
+            $excelStartDate = Carbon::create(1899, 12, 30);
+            return $excelStartDate->addDays(floor($value))
+                ->addSeconds(($value - floor($value)) * 86400);
+        } catch (\Exception $e) {
+            throw new \Exception("Invalid Excel serial date format. Found: {$value}");
+        }
+    }
+    
+    // Try to parse as string date
+    $formats = [
+        'd/m/Y H:i:s',
+        'd/m/Y H:i',
+        'Y-m-d H:i:s',
+        'Y-m-d H:i',
+        'd-m-Y H:i:s',
+        'd/m/Y',
+        'Y-m-d',
+        'd-m-Y',
+        'm/d/Y H:i:s',
+        'm/d/Y',
+    ];
+    
+    foreach ($formats as $format) {
+        try {
+            return Carbon::createFromFormat($format, $value);
+        } catch (\Exception $e) {
+            continue;
+        }
+    }
+    
+    throw new \Exception("Invalid booking date format. Found: {$value}");
+}
+
+/**
+ * Parse date-time string with multiple format support
+ * Handles both Excel serial dates and string date formats
+ */
+private function parseDateTime($value, string $format, int $rowNumber, string $fieldName): string
+{
+    if (empty($value)) {
+        throw new \Exception("{$fieldName} is empty");
+    }
+    
+    // Check if it's an Excel serial date (numeric)
+    if (is_numeric($value)) {
+        try {
+            $excelStartDate = Carbon::create(1899, 12, 30);
+            return $excelStartDate->addDays(floor($value))
+                ->addSeconds(($value - floor($value)) * 86400)
+                ->format('Y-m-d H:i:s');
+        } catch (\Exception $e) {
+            throw new \Exception("Invalid Excel serial date format for {$fieldName}. Found: {$value}");
+        }
+    }
+    
+    // Try the primary format
+    try {
+        return Carbon::createFromFormat($format, $value)->format('Y-m-d H:i:s');
+    } catch (\Exception $e) {
+        // Try alternative formats
+        $alternativeFormats = [
+            'd/m/Y H:i',
+            'Y-m-d H:i:s',
+            'Y-m-d H:i',
+            'd-m-Y H:i:s',
+            'd/m/Y',
+            'Y-m-d',
+            'm/d/Y H:i:s',
+            'm/d/Y',
+        ];
+        
+        foreach ($alternativeFormats as $altFormat) {
+            try {
+                return Carbon::createFromFormat($altFormat, $value)->format('Y-m-d H:i:s');
+            } catch (\Exception $e2) {
+                continue;
+            }
+        }
+        
+        throw new \Exception("Invalid {$fieldName} format. Expected: {$format}. Found: {$value}");
+    }
+}
+
+/**
+ * Parse date string with multiple format support
+ * Handles both Excel serial dates and string date formats
+ */
+private function parseDate($value, string $format, int $rowNumber, string $fieldName): Carbon
+{
+    if (empty($value)) {
+        throw new \Exception("{$fieldName} is empty");
+    }
+    
+    // Check if it's an Excel serial date (numeric)
+    if (is_numeric($value)) {
+        try {
+            $excelStartDate = Carbon::create(1899, 12, 30);
+            return $excelStartDate->addDays(floor($value))
+                ->addSeconds(($value - floor($value)) * 86400);
+        } catch (\Exception $e) {
+            throw new \Exception("Invalid Excel serial date format for {$fieldName}. Found: {$value}");
+        }
+    }
+    
+    // Try the primary format
+    try {
+        return Carbon::createFromFormat($format, $value);
+    } catch (\Exception $e) {
+        // Try alternative formats
+        $alternativeFormats = [
+            'd/m/Y',
+            'Y-m-d',
+            'd-m-Y',
+            'm/d/Y',
+        ];
+        
+        foreach ($alternativeFormats as $altFormat) {
+            try {
+                return Carbon::createFromFormat($altFormat, $value);
+            } catch (\Exception $e2) {
+                continue;
+            }
+        }
+        
+        throw new \Exception("Invalid {$fieldName} format. Expected: {$format}. Found: {$value}");
+    }
+}
+
+/**
+ * Build processing completion message
+ */
+private function buildProcessingMessage(int $processedCount, int $skippedCount): string
+{
+    if ($processedCount == 0 && $skippedCount == 0) {
+        return 'No bookings were processed. Please check your data.';
+    }
+    
+    $message = 'Booking processing completed. ';
+    if ($processedCount > 0) {
+        $message .= $processedCount . ' booking(s) created. ';
+    }
+    if ($skippedCount > 0) {
+        $message .= $skippedCount . ' booking(s) skipped (already exist).';
+    }
+    
+    return trim($message);
+}
+
+/**
+ * Rollback database transaction if active
+ */
+private function rollbackTransaction(): void
+{
+    if (DB::transactionLevel() > 0) {
+        DB::rollBack();
+    }
+}
+}
+
