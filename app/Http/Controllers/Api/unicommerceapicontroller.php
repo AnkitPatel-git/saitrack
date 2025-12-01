@@ -881,7 +881,7 @@ class UnicommerceApiController extends Controller
                         ->first();
                 }
                 
-                if ($existingWarehouse && $existingWarehouse->warehouse_id) {
+                if ($existingWarehouse && !empty($existingWarehouse->name)) {
                     $warehouse = $existingWarehouse;
                 } else {
                     // No warehouse found or created - fail immediately
@@ -905,18 +905,18 @@ class UnicommerceApiController extends Controller
                 }
             }
             
-            // ✅ Additional check: Ensure warehouse has either warehouse_id or name
-            // If warehouse exists but has no warehouse_id, we can still use pickup_location_name
-            if ($warehouse && empty($warehouse->warehouse_id) && empty($warehouse->name)) {
+            // ✅ Additional check: Ensure warehouse has name
+            // Warehouse must have a name to use pickup_location_name
+            if ($warehouse && empty($warehouse->name)) {
                 $response = response()->json([
                     'status' => 'FAILED',
                     'reason' => 'WAREHOUSE_NOT_CONFIGURED',
                     'message' => 'Warehouse for pincode ' . $warehouse->pin_code . ' exists but is not properly configured. ' .
-                                 'Warehouse has no ID or name. Please ensure the warehouse is properly configured before creating shipments.',
+                                 'Warehouse has no name. Please ensure the warehouse is properly configured before creating shipments.',
                     'details' => [
                         'pincode' => $warehouse->pin_code,
                         'warehouse_name' => $warehouse->name ?? 'N/A',
-                        'warehouse_id_missing' => true
+                        'warehouse_name_missing' => true
                     ]
                 ], 400);
 
@@ -1350,30 +1350,9 @@ class UnicommerceApiController extends Controller
             'billing_address' => $billingAddress,
         ];
         
-        // Use pickup_location_name for newly created warehouses (they may not be immediately available by ID)
-        // For newly created warehouses, use name; for existing warehouses, try ID first
-        $useId = false;
-        if (isset($warehouse->warehouse_id) && !empty($warehouse->warehouse_id)) {
-            // Check if warehouse was created recently (within last 5 minutes)
-            if (isset($warehouse->created_at) && $warehouse->created_at) {
-                $createdAt = is_string($warehouse->created_at) ? strtotime($warehouse->created_at) : (is_object($warehouse->created_at) ? $warehouse->created_at->timestamp : time());
-                $fiveMinutesAgo = time() - 300; // 5 minutes in seconds
-                if ($createdAt < $fiveMinutesAgo) {
-                    $useId = true;
-                }
-            } else {
-                // If no created_at, assume it's an existing warehouse and use ID
-                $useId = true;
-            }
-        }
-        
-        if ($useId) {
-            $mappedPayload['pickup_location_id'] = $warehouse->warehouse_id;
-            \Log::info('Using pickup_location_id: ' . $warehouse->warehouse_id);
-        } else {
-            $mappedPayload['pickup_location_name'] = $warehouse->name;
-            \Log::info('Using pickup_location_name: ' . $warehouse->name . ' (warehouse may be newly created)');
-        }
+        // Always use pickup_location_name (warehouse name) instead of warehouse_id
+        $mappedPayload['pickup_location_name'] = $warehouse->name;
+        \Log::info('Using pickup_location_name: ' . $warehouse->name);
         
         // Add cod_amount if payment mode is COD (mandatory for COD)
         if (strtolower($payload['paymentMode']) === 'cod') {
