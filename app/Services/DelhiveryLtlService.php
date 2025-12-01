@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\DeliveryLog;
 use App\Models\Warehouse;
+use App\Models\PincodeServiceabilityCache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Barryvdh\DomPDF\Facade\Pdf;
@@ -120,6 +121,7 @@ class DelhiveryLtlService implements DeliveryServiceInterface
 
     /**
      * Check pincode serviceability
+     * Uses database cache to avoid repeated API calls
      * 
      * @param string $pincode
      * @param float $weight Weight in kg
@@ -128,6 +130,33 @@ class DelhiveryLtlService implements DeliveryServiceInterface
      */
     public function checkPincodeServiceability(string $pincode, float $weight = 1, int $test = 1): array
     {
+        $isTest = (bool) $test;
+        $serviceBy = 'delhivery';
+        
+        // Step 1: Check cache first
+        try {
+            $cached = PincodeServiceabilityCache::findCache($pincode, $weight, $isTest, $serviceBy);
+            
+            if ($cached) {
+                Log::info("Delhivery Serviceability Cache HIT: Pincode {$pincode}, Weight {$weight}kg, Test: " . ($isTest ? 'Yes' : 'No'));
+                
+                return [
+                    'success' => true,
+                    'is_serviceable' => $cached->is_serviceable,
+                    'serviceability_data' => $cached->serviceability_data ?? [],
+                    'message' => $cached->is_serviceable ? 'Pincode is serviceable' : 'Pincode is not serviceable',
+                    'data' => $cached->full_response_data ?? [],
+                    'cached' => true,
+                ];
+            }
+        } catch (\Exception $e) {
+            // If cache lookup fails, continue to API call
+            Log::warning("Delhivery Serviceability Cache lookup failed: " . $e->getMessage());
+        }
+        
+        // Step 2: Cache miss - call API
+        Log::info("Delhivery Serviceability Cache MISS: Pincode {$pincode}, Weight {$weight}kg, Test: " . ($isTest ? 'Yes' : 'No') . " - Calling API");
+        
         $jwt = $this->authenticate($test);
         $baseUrl = $test ? $this->baseUrl : $this->baseUrlProd;
         $endpoint = "/pincode-service/{$pincode}";
@@ -165,20 +194,62 @@ class DelhiveryLtlService implements DeliveryServiceInterface
                 'error_message'   => $response->successful() ? null : ($data['message'] ?? 'Serviceability check failed'),
             ]);
 
+            // Step 3: Store in cache if API call was successful
+            if ($response->successful()) {
+                try {
+                    PincodeServiceabilityCache::storeCache(
+                        $pincode,
+                        $weight,
+                        $isTest,
+                        $serviceBy,
+                        $isServiceable,
+                        $serviceabilityData,
+                        $data
+                    );
+                    Log::info("Delhivery Serviceability cached: Pincode {$pincode}, Weight {$weight}kg, Serviceable: " . ($isServiceable ? 'Yes' : 'No'));
+                } catch (\Exception $e) {
+                    // Don't fail the request if caching fails
+                    Log::warning("Failed to cache serviceability result: " . $e->getMessage());
+                }
+            }
+
             return [
                 'success' => $response->successful(),
                 'is_serviceable' => $isServiceable,
                 'serviceability_data' => $serviceabilityData,
                 'message' => $isServiceable ? 'Pincode is serviceable' : 'Pincode is not serviceable',
                 'data' => $data,
+                'cached' => false,
             ];
         } catch (\Exception $e) {
             Log::error('Delhivery LTL Serviceability Check Exception: ' . $e->getMessage());
+            
+            // On exception, try to return cached data (graceful degradation)
+            try {
+                $cached = PincodeServiceabilityCache::findCache($pincode, $weight, $isTest, $serviceBy);
+                
+                if ($cached) {
+                    Log::info("Delhivery Serviceability: Using cache due to API exception");
+                    return [
+                        'success' => true,
+                        'is_serviceable' => $cached->is_serviceable,
+                        'serviceability_data' => $cached->serviceability_data ?? [],
+                        'message' => $cached->is_serviceable ? 'Pincode is serviceable (from cache)' : 'Pincode is not serviceable (from cache)',
+                        'data' => $cached->full_response_data ?? [],
+                        'cached' => true,
+                        'warning' => 'Using cache due to API error',
+                    ];
+                }
+            } catch (\Exception $cacheException) {
+                // Ignore cache errors during exception handling
+            }
+            
             return [
                 'success' => false,
                 'is_serviceable' => false,
                 'message' => 'Exception: ' . $e->getMessage(),
                 'data' => [],
+                'cached' => false,
             ];
         }
     }
@@ -188,23 +259,68 @@ class DelhiveryLtlService implements DeliveryServiceInterface
      */
     public function getOrCreateWarehouse(string $pincode, array $warehouseData, int $test = 1): ?Warehouse
     {
-        // Check if warehouse exists for this pincode
+        $isTest = (bool) $test;
+        $serviceBy = 'delhivery';
+        
+        // Step 1: Try to find warehouse with exact match (test + serviceBy)
+        $warehouse = Warehouse::where('pin_code', $pincode)
+            ->where('test', $isTest)
+            ->where('serviceBy', $serviceBy)
+            ->where('is_active', true)
+            ->first();
+
+        if ($warehouse) {
+            Log::info("Warehouse found in DB (exact match) for pincode: {$pincode}, test: " . ($isTest ? 'Yes' : 'No') . ", serviceBy: {$serviceBy}");
+            return $warehouse;
+        }
+
+        // Step 2: Fallback - try to find any active warehouse for this pincode (for backward compatibility)
+        // This handles cases where warehouses exist but don't have test/serviceBy set yet
         $warehouse = Warehouse::where('pin_code', $pincode)
             ->where('is_active', true)
             ->first();
 
         if ($warehouse) {
-            Log::info("Warehouse found in DB for pincode: {$pincode}");
+            // Update existing warehouse with test/serviceBy if not set
+            if (empty($warehouse->test) || empty($warehouse->serviceBy)) {
+                try {
+                    $warehouse->test = $isTest;
+                    $warehouse->serviceBy = $serviceBy;
+                    $warehouse->save();
+                    Log::info("Updated existing warehouse with test/serviceBy: pincode {$pincode}");
+                } catch (\Exception $e) {
+                    Log::warning("Failed to update warehouse test/serviceBy: " . $e->getMessage());
+                }
+            }
+            Log::info("Warehouse found in DB (fallback) for pincode: {$pincode}");
             return $warehouse;
         }
 
-        Log::info("Warehouse not found for pincode: {$pincode}, attempting to create via API");
+        Log::info("Warehouse not found for pincode: {$pincode}, test: " . ($isTest ? 'Yes' : 'No') . ", serviceBy: {$serviceBy}, attempting to create via API");
+        Log::info("Warehouse data being sent to API: " . json_encode($warehouseData));
 
-        // Create new warehouse via API
+        // Step 3: Create new warehouse via API
         $result = $this->createWarehouse($warehouseData, $test);
 
-        if ($result['success'] && isset($result['warehouse_id'])) {
-            Log::info("Warehouse created successfully via API. Warehouse ID: " . $result['warehouse_id']);
+        Log::info("Warehouse API creation result: " . json_encode([
+            'success' => $result['success'] ?? false,
+            'warehouse_id' => $result['warehouse_id'] ?? null,
+            'message' => $result['message'] ?? 'No message',
+            'full_result' => $result, // Log full result for debugging
+        ]));
+
+        // Check if we have warehouse_id - even if success is false, if we have warehouse_id, use it
+        $warehouseId = $result['warehouse_id'] ?? null;
+        $isSuccess = ($result['success'] ?? false) && $warehouseId !== null;
+        
+        // Fallback: if we have warehouse_id but success is false, still treat as success
+        if (!$isSuccess && $warehouseId) {
+            Log::warning("Warehouse creation returned success=false but warehouse_id exists: {$warehouseId}. Treating as success.");
+            $isSuccess = true;
+        }
+
+        if ($isSuccess && $warehouseId) {
+                Log::info("Warehouse created successfully via API. Warehouse ID: " . $warehouseId);
             
             // Save warehouse to database
             try {
@@ -220,23 +336,125 @@ class DelhiveryLtlService implements DeliveryServiceInterface
                     'pick_up_days' => $warehouseData['pick_up_days'] ?? [],
                     'business_days' => $warehouseData['business_days'] ?? [],
                     'ret_address' => $warehouseData['ret_address'] ?? [],
-                    'warehouse_id' => $result['warehouse_id'],
+                    'warehouse_id' => $warehouseId,
                     'is_active' => true,
+                    'test' => $isTest,
+                    'serviceBy' => $serviceBy,
                 ]);
 
                 Log::info("Warehouse saved to database. DB ID: " . $warehouse->id);
                 return $warehouse;
             } catch (\Exception $e) {
-                Log::error("Failed to save warehouse to database: " . $e->getMessage());
+                Log::error("Failed to save warehouse to database: " . $e->getMessage(), [
+                    'trace' => $e->getTraceAsString()
+                ]);
                 // Return null but log the error
                 return null;
             }
         } else {
             $errorMsg = $result['message'] ?? 'Unknown error';
+            $errorData = $result['data'] ?? [];
+            
             if (is_array($errorMsg)) {
                 $errorMsg = json_encode($errorMsg);
             }
-            Log::warning("Warehouse creation failed via API. Error: " . $errorMsg);
+            
+            // Check if error message indicates warehouse already exists
+            $errorMsgString = is_string($errorMsg) ? $errorMsg : json_encode($errorMsg);
+            $alreadyExists = stripos($errorMsgString, 'already exists') !== false || 
+                            stripos($errorMsgString, 'CLIENT_STORES_CREATE') !== false;
+            
+            if ($alreadyExists) {
+                Log::warning("Warehouse already exists in Delhivery for pincode: {$pincode}. Creating record in our DB without warehouse_id.");
+                
+                // Warehouse exists in Delhivery but not in our DB - create record anyway
+                // We'll need to fetch the warehouse_id later or use it without ID
+                try {
+                    $warehouse = Warehouse::updateOrCreate(
+                        [
+                            'pin_code' => $pincode,
+                            'test' => $isTest,
+                            'serviceBy' => $serviceBy,
+                        ],
+                        [
+                            'city' => $warehouseData['city'] ?? '',
+                            'state' => $warehouseData['state'] ?? '',
+                            'country' => $warehouseData['country'] ?? 'India',
+                            'name' => $warehouseData['name'] ?? "Warehouse_{$pincode}",
+                            'address_details' => $warehouseData['address_details'] ?? [],
+                            'business_hours' => $warehouseData['business_hours'] ?? [],
+                            'pick_up_hours' => $warehouseData['pick_up_hours'] ?? [],
+                            'pick_up_days' => $warehouseData['pick_up_days'] ?? [],
+                            'business_days' => $warehouseData['business_days'] ?? [],
+                            'ret_address' => $warehouseData['ret_address'] ?? [],
+                            'warehouse_id' => null, // Will be updated later when we fetch it
+                            'is_active' => true,
+                        ]
+                    );
+                    
+                    Log::info("Warehouse record created in DB (exists in Delhivery but ID unknown). DB ID: " . $warehouse->id . ". Note: warehouse_id needs to be fetched from Delhivery.");
+                    Log::warning("Warehouse exists in Delhivery but warehouse_id is not available. You may need to fetch it manually or use pickup_location_name instead of pickup_location_id in manifest creation.");
+                    
+                    // Return the warehouse even without warehouse_id - the manifest creation can use name instead
+                    return $warehouse;
+                } catch (\Exception $e) {
+                    Log::error("Failed to save warehouse record for existing Delhivery warehouse: " . $e->getMessage());
+                }
+            }
+            
+            // Check if warehouse might already exist in Delhivery but not in our DB
+            // Sometimes API returns success but with a different structure, or warehouse already exists
+            $warehouseIdFromError = null;
+            if (isset($errorData['data']['result']['id'])) {
+                $warehouseIdFromError = $errorData['data']['result']['id'];
+            } elseif (isset($errorData['result']['id'])) {
+                $warehouseIdFromError = $errorData['result']['id'];
+            }
+            
+            // If we got a warehouse ID even though success=false, try to use it
+            if ($warehouseIdFromError) {
+                Log::warning("Warehouse creation returned error but warehouse_id found: {$warehouseIdFromError}. Attempting to use it.");
+                
+                try {
+                    // Try to create warehouse record with the ID we got
+                    $warehouse = Warehouse::updateOrCreate(
+                        [
+                            'pin_code' => $pincode,
+                            'test' => $isTest,
+                            'serviceBy' => $serviceBy,
+                        ],
+                        [
+                            'city' => $warehouseData['city'] ?? '',
+                            'state' => $warehouseData['state'] ?? '',
+                            'country' => $warehouseData['country'] ?? 'India',
+                            'name' => $warehouseData['name'] ?? "Warehouse_{$pincode}",
+                            'address_details' => $warehouseData['address_details'] ?? [],
+                            'business_hours' => $warehouseData['business_hours'] ?? [],
+                            'pick_up_hours' => $warehouseData['pick_up_hours'] ?? [],
+                            'pick_up_days' => $warehouseData['pick_up_days'] ?? [],
+                            'business_days' => $warehouseData['business_days'] ?? [],
+                            'ret_address' => $warehouseData['ret_address'] ?? [],
+                            'warehouse_id' => $warehouseIdFromError,
+                            'is_active' => true,
+                        ]
+                    );
+                    
+                    Log::info("Warehouse saved to database using warehouse_id from error response. DB ID: " . $warehouse->id);
+                    return $warehouse;
+                } catch (\Exception $e) {
+                    Log::error("Failed to save warehouse from error response: " . $e->getMessage());
+                }
+            }
+            
+            Log::error("Warehouse creation failed via API. Error: {$errorMsg}", [
+                'pincode' => $pincode,
+                'test' => $isTest,
+                'serviceBy' => $serviceBy,
+                'api_response' => $errorData,
+                'warehouse_data_sent' => $warehouseData,
+                'warehouse_id_from_error' => $warehouseIdFromError,
+                'already_exists_detected' => $alreadyExists,
+            ]);
         }
 
         return null;
@@ -258,21 +476,38 @@ class DelhiveryLtlService implements DeliveryServiceInterface
             ])->post($baseUrl . $endpoint, $payload);
 
             $data = $response->json();
+            
+            // Log raw response for debugging
+            Log::info('Delhivery Warehouse Creation - Raw Response', [
+                'status_code' => $response->status(),
+                'response_successful' => $response->successful(),
+                'raw_response' => $response->body(),
+            ]);
 
             // Check for success - warehouse ID is in data.result.id according to API response
-            // Response structure: { "data": { "result": { "id": "..." } } }
+            // Response structure: { "data": { "success": true, "result": { "id": "..." } }, "success": true }
             $warehouseId = $data['data']['result']['id'] ?? $data['data']['id'] ?? $data['id'] ?? $data['warehouse_id'] ?? $data['data']['warehouse_id'] ?? null;
             
-            // Also check if the response indicates success
-            $apiSuccess = ($data['success'] ?? false) || ($data['data']['success'] ?? false);
-            $isSuccess = $response->successful() && $apiSuccess && $warehouseId !== null;
+            // Check success flags - API can have success at root level OR in data.success
+            $rootSuccess = $data['success'] ?? false;
+            $dataSuccess = $data['data']['success'] ?? false;
+            $apiSuccess = $rootSuccess || $dataSuccess;
             
-            Log::info('Delhivery Warehouse Creation Response', [
+            // Success if: (HTTP status is 2xx OR API says success) AND we have warehouse ID
+            // Be lenient - if API says success and we have warehouse_id, treat as success even if HTTP status is not 2xx
+            $isSuccess = ($response->successful() || $apiSuccess) && $warehouseId !== null;
+            
+            Log::info('Delhivery Warehouse Creation Response Parsing', [
                 'status_code' => $response->status(),
+                'http_successful' => $response->successful(),
+                'root_success' => $rootSuccess,
+                'data_success' => $dataSuccess,
                 'api_success' => $apiSuccess,
                 'warehouse_id' => $warehouseId,
-                'response_structure' => array_keys($data),
-                'full_response' => $data, // Log full response for debugging
+                'is_success' => $isSuccess,
+                'response_keys' => array_keys($data),
+                'data_keys' => isset($data['data']) ? array_keys($data['data']) : [],
+                'result_keys' => isset($data['data']['result']) ? array_keys($data['data']['result']) : [],
             ]);
 
             // Extract error message - handle both string and array formats
@@ -293,6 +528,16 @@ class DelhiveryLtlService implements DeliveryServiceInterface
                     $msg = $data['message'] ?? 'Warehouse creation failed';
                     $errorMsg = is_array($msg) ? json_encode($msg) : (string) $msg;
                 }
+                
+                // Log detailed error information
+                Log::error('Delhivery Warehouse Creation Failed - Detailed Error', [
+                    'status_code' => $response->status(),
+                    'response_body' => $data,
+                    'error_message' => $errorMsg,
+                    'warehouse_id_found' => $warehouseId,
+                    'api_success_flag' => $apiSuccess,
+                    'payload_sent' => $payload,
+                ]);
             }
             
             $this->logApiCall([
@@ -311,10 +556,22 @@ class DelhiveryLtlService implements DeliveryServiceInterface
                 ]);
             }
 
+            // Even if isSuccess is false, if we have a warehouse_id, return it
+            // Sometimes API returns warehouse_id even with error messages
+            if (!$isSuccess && $warehouseId) {
+                Log::warning("Warehouse creation marked as failed but warehouse_id exists: {$warehouseId}. Returning success anyway.");
+                return [
+                    'success' => true,
+                    'warehouse_id' => $warehouseId,
+                    'message' => 'Warehouse created successfully (warehouse_id found in response)',
+                    'data' => $data,
+                ];
+            }
+            
             return [
                 'success' => $isSuccess,
                 'warehouse_id' => $warehouseId,
-                'message' => $isSuccess ? 'Warehouse created successfully' : ($data['message'] ?? $data['error'] ?? 'Failed'),
+                'message' => $isSuccess ? 'Warehouse created successfully' : ($data['message'] ?? ($data['data']['message'] ?? ($data['error'] ?? 'Failed'))),
                 'data' => $data,
             ];
         } catch (\Exception $e) {

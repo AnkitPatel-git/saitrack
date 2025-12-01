@@ -874,9 +874,35 @@ class UnicommerceApiController extends Controller
                 \Log::error('Warehouse creation/retrieval failed for both original and fallback pincodes. Cannot proceed with manifest creation.');
                 
                 // Try to find any existing warehouse in DB as last resort
-                $existingWarehouse = Warehouse::where('pin_code', $payload['pickupAddressDetails']['pincode'])->first();
+                // First try with matching test and serviceBy
+                $isTest = (bool) $test;
+                $serviceBy = 'delhivery';
+                
+                $existingWarehouse = Warehouse::where('pin_code', $payload['pickupAddressDetails']['pincode'])
+                    ->where('test', $isTest)
+                    ->where('serviceBy', $serviceBy)
+                    ->where('is_active', true)
+                    ->first();
+                    
                 if (!$existingWarehouse) {
-                    $existingWarehouse = Warehouse::where('pin_code', $fallbackPincode)->first();
+                    $existingWarehouse = Warehouse::where('pin_code', $fallbackPincode)
+                        ->where('test', $isTest)
+                        ->where('serviceBy', $serviceBy)
+                        ->where('is_active', true)
+                        ->first();
+                }
+                
+                // If still not found, try without test/serviceBy filter (fallback)
+                if (!$existingWarehouse) {
+                    $existingWarehouse = Warehouse::where('pin_code', $payload['pickupAddressDetails']['pincode'])
+                        ->where('is_active', true)
+                        ->first();
+                }
+                
+                if (!$existingWarehouse) {
+                    $existingWarehouse = Warehouse::where('pin_code', $fallbackPincode)
+                        ->where('is_active', true)
+                        ->first();
                 }
                 
                 if ($existingWarehouse && $existingWarehouse->warehouse_id) {
@@ -904,20 +930,19 @@ class UnicommerceApiController extends Controller
                 }
             }
             
-            // ✅ Additional check: Ensure warehouse has a valid warehouse_id
-            // If warehouse exists but has no warehouse_id, it means creation failed
-            if ($warehouse && empty($warehouse->warehouse_id)) {
-                \Log::error('Warehouse found but has no warehouse_id. Warehouse creation must have failed. Cannot proceed.');
+            // ✅ Additional check: Ensure warehouse has either warehouse_id or name
+            // If warehouse exists but has no warehouse_id, we can still use pickup_location_name
+            if ($warehouse && empty($warehouse->warehouse_id) && empty($warehouse->name)) {
+                \Log::error('Warehouse found but has no warehouse_id or name. Cannot proceed.');
                 
                 $response = response()->json([
                     'status' => 'FAILED',
                     'reason' => 'WAREHOUSE_NOT_CONFIGURED',
                     'message' => 'Warehouse for pincode ' . $warehouse->pin_code . ' exists but is not properly configured. ' .
-                                 'Warehouse creation failed or warehouse is not configured in Delhivery FAAS system. ' .
-                                 'Please ensure the warehouse is properly configured before creating shipments.',
+                                 'Warehouse has no ID or name. Please ensure the warehouse is properly configured before creating shipments.',
                     'details' => [
                         'pincode' => $warehouse->pin_code,
-                        'warehouse_name' => $warehouse->name,
+                        'warehouse_name' => $warehouse->name ?? 'N/A',
                         'warehouse_id_missing' => true
                     ]
                 ], 400);
@@ -925,6 +950,11 @@ class UnicommerceApiController extends Controller
                 $executionTime = microtime(true) - $startTime;
                 $this->logApiRequest($request, $response, 'waybill_create', $executionTime);
                 return $response;
+            }
+            
+            // Log if warehouse exists but without ID (we'll use name instead)
+            if ($warehouse && empty($warehouse->warehouse_id) && !empty($warehouse->name)) {
+                \Log::info('Warehouse exists but has no warehouse_id. Will use pickup_location_name: ' . $warehouse->name);
             }
 
             /**

@@ -26,6 +26,8 @@ class Warehouse extends Model
         'ret_address',
         'warehouse_id', // Store the ID returned from Delhivery API
         'is_active',
+        'test',
+        'serviceBy',
     ];
 
     protected $casts = [
@@ -36,5 +38,7 @@ class Warehouse extends Model
         'business_days' => 'array',
         'ret_address' => 'array',
         'is_active' => 'boolean',
+        'test' => 'boolean',
+        'serviceBy' => 'string',
     ];
 }
