@@ -793,7 +793,10 @@ class DelhiveryLtlService implements DeliveryServiceInterface
         $awbNumber = $result['awb_number'] ?? null;
         
         if ($result['success'] && $jobId && !$awbNumber) {
-            Log::info("Delhivery manifest created with job_id: {$jobId}. Automatically polling status...");
+            Log::info("Delhivery manifest created with job_id: {$jobId}. Waiting 1 second before polling status...");
+            
+            // Wait 1 second before first poll attempt
+            sleep(1);
             
             // Poll manifest status with retries
             $maxRetries = 3;

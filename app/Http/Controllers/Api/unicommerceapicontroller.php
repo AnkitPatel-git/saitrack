@@ -1033,30 +1033,53 @@ class UnicommerceApiController extends Controller
             $delhiveryWaybill = $delhiveryResponse['waybill'] ?? null;
             $jobId = $delhiveryResponse['job_id'] ?? null;
             
-            // If still no waybill after automatic polling, return job_id for later polling
+            // If still no waybill after automatic polling, wait 1 second and poll once more
             if (!$delhiveryWaybill && $jobId) {
-                \Log::warning("Delhivery manifest status not ready after automatic polling for job_id: {$jobId}. Returning job_id for later polling.");
-                // Return job_id so client can poll later
-                $response = response()->json([
-                    'status' => 'PENDING',
-                    'reason' => 'ASYNC_PROCESSING',
-                    'message' => 'Manifest is being processed. Use job_id to poll status via GET /manifest?job_id={job_id}',
-                    'job_id' => $jobId,
-                    'details' => $delhiveryResponse['data'] ?? []
-                ], 202);
+                \Log::info("Delhivery manifest status not ready after automatic polling. Waiting 1 second and polling once more for job_id: {$jobId}");
                 
-                $executionTime = microtime(true) - $startTime;
-                $this->logApiRequest($request, $response, 'waybill_create', $executionTime);
-                return $response;
+                // Wait 1 second
+                sleep(1);
+                
+                // Poll status one more time
+                $statusResult = $this->delhiveryService->getManifestStatus($jobId, $request->attributes->get('test'));
+                
+                if ($statusResult['success'] && ($statusResult['lr_number'] || !empty($statusResult['awb_numbers']))) {
+                    // Get LR number (primary tracking ID) or first AWB number
+                    $delhiveryWaybill = $statusResult['lr_number'] ?? 
+                                      (isset($statusResult['awb_numbers']) && !empty($statusResult['awb_numbers']) 
+                                       ? $statusResult['awb_numbers'][0] : null);
+                    
+                    \Log::info("Delhivery manifest status retrieved after additional poll. LR: {$delhiveryWaybill}, AWBs: " . json_encode($statusResult['awb_numbers'] ?? []));
+                } else {
+                    \Log::warning("Delhivery manifest status still not ready after additional poll for job_id: {$jobId}. Returning job_id for later polling.");
+                    // Return job_id so client can poll later
+                    $response = response()->json([
+                        'status' => 'PENDING',
+                        'reason' => 'ASYNC_PROCESSING',
+                        'message' => 'Manifest is being processed. Use job_id to poll status via GET /manifest?job_id={job_id}',
+                        'job_id' => $jobId,
+                        'details' => array_merge($delhiveryResponse['data'] ?? [], [
+                            'request_id' => $delhiveryResponse['data']['request_id'] ?? null,
+                            'success' => true
+                        ])
+                    ], 202);
+                    
+                    $executionTime = microtime(true) - $startTime;
+                    $this->logApiRequest($request, $response, 'waybill_create', $executionTime);
+                    return $response;
+                }
             }
             
             // Extract LR number and AWB numbers from response
             $lrNumber = $delhiveryResponse['lr_number'] ?? null;
             $awbNumbers = $delhiveryResponse['awb_numbers'] ?? [];
             
+            // Use LR number as primary identifier for labels (more reliable than waybill)
+            $labelIdentifier = $lrNumber ?? $delhiveryWaybill;
+            
             // Log the waybill details if available
             if ($delhiveryWaybill) {
-                \Log::info("Delhivery waybill created successfully. LR: " . ($lrNumber ?? 'N/A') . ", Waybill: {$delhiveryWaybill}, AWBs: " . json_encode($awbNumbers));
+                \Log::info("Delhivery waybill created successfully. LR: " . ($lrNumber ?? 'N/A') . ", Waybill: {$delhiveryWaybill}, AWBs: " . json_encode($awbNumbers) . ", Label Identifier: {$labelIdentifier}");
             }
 
             // ✅ Save booking in DB
@@ -1123,39 +1146,77 @@ class UnicommerceApiController extends Controller
                 'createdbyy' => 'API',
             ]);
 
-            // Shipping label - Get from Delhivery API
+            // Shipping label - Get from Delhivery API with retries
+            // Labels may not be immediately available after manifest creation, so we retry
+            // Always attempt to get labels when manifest is successfully created
             $shippingLabelUrl = null;
-            if ($delhiveryWaybill) {
-                try {
-                    \Log::info("Fetching Delhivery shipping labels for LR: {$delhiveryWaybill}");
-                    
-                    // Get label URLs from Delhivery API
-                    $labelUrlsResponse = $this->delhiveryService->getLabelUrls(
-                        $delhiveryWaybill,
-                        $request->attributes->get('test')
-                    );
-                    
-                    if ($labelUrlsResponse['success'] && !empty($labelUrlsResponse['label_urls'])) {
-                        // Download and store labels
-                        $shippingLabelUrl = $this->delhiveryService->downloadAndStoreLabels(
-                            $delhiveryWaybill,
-                            $labelUrlsResponse['label_urls'],
-                            $booking->id,
+            if ($labelIdentifier) {
+                \Log::info("Fetching Delhivery shipping labels for identifier: {$labelIdentifier} (LR: " . ($lrNumber ?? 'N/A') . ", Waybill: " . ($delhiveryWaybill ?? 'N/A') . ")");
+                
+                // Wait 2 seconds after manifest creation before trying to get labels
+                // Labels may take a moment to be generated
+                sleep(2);
+                
+                $maxLabelRetries = 5;
+                $labelRetryDelay = 2; // seconds
+                
+                for ($labelAttempt = 1; $labelAttempt <= $maxLabelRetries; $labelAttempt++) {
+                    try {
+                        if ($labelAttempt > 1) {
+                            \Log::info("Retrying label fetch (attempt {$labelAttempt}/{$maxLabelRetries}) for identifier: {$labelIdentifier}");
+                            sleep($labelRetryDelay);
+                        }
+                        
+                        // Get label URLs from Delhivery API - use LR number if available, otherwise use waybill
+                        $labelUrlsResponse = $this->delhiveryService->getLabelUrls(
+                            $labelIdentifier,
                             $request->attributes->get('test')
                         );
                         
-                        if ($shippingLabelUrl) {
-                            \Log::info("Delhivery shipping label saved: {$shippingLabelUrl}");
+                        if ($labelUrlsResponse['success'] && !empty($labelUrlsResponse['label_urls'])) {
+                            // Download and store labels
+                            $shippingLabelUrl = $this->delhiveryService->downloadAndStoreLabels(
+                                $labelIdentifier,
+                                $labelUrlsResponse['label_urls'],
+                                $booking->id,
+                                $request->attributes->get('test')
+                            );
+                            
+                            if ($shippingLabelUrl) {
+                                \Log::info("Delhivery shipping label saved successfully: {$shippingLabelUrl} (attempt {$labelAttempt})");
+                                break; // Success, exit retry loop
+                            } else {
+                                \Log::warning("Failed to download/store Delhivery shipping labels for identifier: {$labelIdentifier} (attempt {$labelAttempt})");
+                            }
                         } else {
-                            \Log::warning("Failed to download/store Delhivery shipping labels for LR: {$delhiveryWaybill}");
+                            $errorMsg = $labelUrlsResponse['message'] ?? 'Unknown error';
+                            \Log::info("Label URLs not available yet for identifier: {$labelIdentifier} (attempt {$labelAttempt}). Message: {$errorMsg}");
+                            
+                            // If this is not the last attempt, continue to retry
+                            if ($labelAttempt < $maxLabelRetries) {
+                                continue;
+                            } else {
+                                \Log::warning("Failed to get label URLs from Delhivery after {$maxLabelRetries} attempts for identifier: {$labelIdentifier}");
+                            }
                         }
-                    } else {
-                        \Log::warning("Failed to get label URLs from Delhivery for LR: {$delhiveryWaybill}. Message: " . ($labelUrlsResponse['message'] ?? 'Unknown error'));
+                    } catch (\Exception $e) {
+                        \Log::error("Error fetching Delhivery shipping label (attempt {$labelAttempt}): " . $e->getMessage());
+                        
+                        // If this is not the last attempt, continue to retry
+                        if ($labelAttempt < $maxLabelRetries) {
+                            continue;
+                        } else {
+                            \Log::error("Failed to fetch Delhivery shipping label after {$maxLabelRetries} attempts: " . $e->getMessage());
+                        }
                     }
-                } catch (\Exception $e) {
-                    \Log::error("Error fetching Delhivery shipping label: " . $e->getMessage());
-                    // Continue without label - don't fail the entire request
                 }
+                
+                // If still no label after all retries, log warning but don't fail the request
+                if (!$shippingLabelUrl) {
+                    \Log::warning("Could not retrieve shipping label for identifier: {$labelIdentifier} after {$maxLabelRetries} attempts. Manifest was created successfully but label is not available yet.");
+                }
+            } else {
+                \Log::warning("No waybill/LR number available, cannot fetch shipping label");
             }
 
             // ✅ Success response
