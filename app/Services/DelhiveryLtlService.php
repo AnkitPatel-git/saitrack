@@ -27,7 +27,9 @@ class DelhiveryLtlService implements DeliveryServiceInterface
     private $usernameProd = 'SBTECHNOWORLDSOLUTIONDCB2BRC';
     private $passwordProd = 'A4aFT2zFdDkBA9@';
 
-    private $jwtToken = null;
+    // Cache JWT tokens separately for test and production
+    private $jwtTokenTest = null;
+    private $jwtTokenProd = null;
 
     public function __construct()
     {
@@ -67,11 +69,18 @@ class DelhiveryLtlService implements DeliveryServiceInterface
     }
 
     /**
-     * Authenticate and cache JWT
+     * Authenticate and cache JWT separately for test and production
      */
     private function authenticate(int $test = 1): string
     {
-        if ($this->jwtToken) return $this->jwtToken;
+        // Use separate token cache for test and production
+        $isTest = (bool) $test;
+        if ($isTest && $this->jwtTokenTest) {
+            return $this->jwtTokenTest;
+        }
+        if (!$isTest && $this->jwtTokenProd) {
+            return $this->jwtTokenProd;
+        }
 
         $baseUrl = $test ? $this->baseUrl : $this->baseUrlProd;
         $endpoint = '/ums/login';
@@ -107,15 +116,22 @@ class DelhiveryLtlService implements DeliveryServiceInterface
 
         // The response might contain 'access_token', 'token', 'JWTToken', or nested in 'data.jwt'
         // Based on Delhivery API, the token is usually in data['data']['jwt']
-        $this->jwtToken = $data['data']['jwt'] ?? $data['access_token'] ?? $data['token'] ?? $data['JWTToken'] ?? null;
+        $jwtToken = $data['data']['jwt'] ?? $data['access_token'] ?? $data['token'] ?? $data['JWTToken'] ?? null;
         
-        if (!$this->jwtToken) {
+        if (!$jwtToken) {
             // Log the full response for debugging
             Log::error('Delhivery LTL auth - No token found in response. Response: ' . json_encode($data));
             throw new \Exception('Delhivery LTL auth failed: No token in response. Response: ' . json_encode($data));
         }
         
-        return $this->jwtToken;
+        // Cache token separately for test and production
+        if ($isTest) {
+            $this->jwtTokenTest = $jwtToken;
+        } else {
+            $this->jwtTokenProd = $jwtToken;
+        }
+        
+        return $jwtToken;
     }
 
     /**
@@ -390,6 +406,14 @@ class DelhiveryLtlService implements DeliveryServiceInterface
         $isTest = (bool) $test;
         $serviceBy = 'delhivery';
         
+        Log::info("getOrCreateWarehouse called", [
+            'pincode' => $pincode,
+            'test_param' => $test,
+            'test_type' => gettype($test),
+            'isTest' => $isTest,
+            'serviceBy' => $serviceBy
+        ]);
+        
         // Step 1: Try to find warehouse with exact match (test + serviceBy)
         $warehouse = Warehouse::where('pin_code', $pincode)
             ->where('test', $isTest)
@@ -402,10 +426,15 @@ class DelhiveryLtlService implements DeliveryServiceInterface
             return $warehouse;
         }
 
-        // Step 2: Fallback - try to find any active warehouse for this pincode (for backward compatibility)
+        // Step 2: Fallback - try to find warehouse for this pincode ONLY if test/serviceBy are not set (backward compatibility)
         // This handles cases where warehouses exist but don't have test/serviceBy set yet
+        // IMPORTANT: Do NOT return warehouses that have test/serviceBy set but don't match - we need separate warehouses for test/prod
         $warehouse = Warehouse::where('pin_code', $pincode)
             ->where('is_active', true)
+            ->where(function($query) {
+                $query->whereNull('test')
+                      ->orWhereNull('serviceBy');
+            })
             ->first();
 
         if ($warehouse) {
@@ -415,12 +444,12 @@ class DelhiveryLtlService implements DeliveryServiceInterface
                     $warehouse->test = $isTest;
                     $warehouse->serviceBy = $serviceBy;
                     $warehouse->save();
-                    Log::info("Updated existing warehouse with test/serviceBy: pincode {$pincode}");
+                    Log::info("Updated existing warehouse with test/serviceBy: pincode {$pincode}, test: " . ($isTest ? 'Yes' : 'No'));
                 } catch (\Exception $e) {
                     Log::warning("Failed to update warehouse test/serviceBy: " . $e->getMessage());
                 }
             }
-            Log::info("Warehouse found in DB (fallback) for pincode: {$pincode}");
+            Log::info("Warehouse found in DB (fallback - backward compatibility) for pincode: {$pincode}");
             return $warehouse;
         }
 
@@ -483,20 +512,68 @@ class DelhiveryLtlService implements DeliveryServiceInterface
             $errorMsg = $result['message'] ?? 'Unknown error';
             $errorData = $result['data'] ?? [];
             
-            if (is_array($errorMsg)) {
-                $errorMsg = json_encode($errorMsg);
+            // Check error in multiple places - API might return error in different structures
+            $errorMessageFromData = null;
+            if (isset($errorData['error'])) {
+                if (is_array($errorData['error'])) {
+                    $errMsg = $errorData['error']['message'] ?? null;
+                    if ($errMsg !== null) {
+                        // Handle array of error messages (like ['Transaction Failed: ...'])
+                        if (is_array($errMsg)) {
+                            $errorMessageFromData = is_array($errMsg[0] ?? null) ? json_encode($errMsg) : (string) ($errMsg[0] ?? json_encode($errMsg));
+                        } else {
+                            $errorMessageFromData = (string) $errMsg;
+                        }
+                    } else {
+                        $errorMessageFromData = json_encode($errorData['error']);
+                    }
+                } else {
+                    $errorMessageFromData = (string) $errorData['error'];
+                }
             }
             
+            // Use error message from data if available, otherwise use result message
+            $finalErrorMsg = $errorMessageFromData ?? $errorMsg;
+            
+            // Convert to string if it's an array
+            if (is_array($finalErrorMsg)) {
+                // If it's an array with a string at index 0, extract it
+                if (isset($finalErrorMsg[0]) && is_string($finalErrorMsg[0])) {
+                    $finalErrorMsg = $finalErrorMsg[0];
+                } else {
+                    $finalErrorMsg = json_encode($finalErrorMsg);
+                }
+            }
+            
+            // Ensure it's a string for string operations
+            $errorMsgString = is_string($finalErrorMsg) ? $finalErrorMsg : (string) $finalErrorMsg;
+            
             // Check if error message indicates warehouse already exists
-            $errorMsgString = is_string($errorMsg) ? $errorMsg : json_encode($errorMsg);
             $alreadyExists = stripos($errorMsgString, 'already exists') !== false || 
-                            stripos($errorMsgString, 'CLIENT_STORES_CREATE') !== false;
+                            stripos($errorMsgString, 'CLIENT_STORES_CREATE') !== false ||
+                            (stripos($errorMsgString, 'warehouse') !== false && stripos($errorMsgString, 'exists') !== false);
+            
+            Log::info("Checking if warehouse already exists", [
+                'error_msg_string' => $errorMsgString,
+                'already_exists' => $alreadyExists,
+                'pincode' => $pincode,
+                'test' => $test,
+                'isTest' => $isTest,
+                'isTest_bool' => $isTest ? 'Yes' : 'No',
+                'serviceBy' => $serviceBy
+            ]);
             
             if ($alreadyExists) {
-                Log::warning("Warehouse already exists in Delhivery for pincode: {$pincode}. Creating record in our DB without warehouse_id.");
+                Log::info("Warehouse already exists in Delhivery for pincode: {$pincode}, test: " . ($isTest ? 'Yes' : 'No') . ". Creating/updating record in our DB with test={$isTest}, serviceBy={$serviceBy}.");
                 
                 // Warehouse exists in Delhivery but not in our DB - create record anyway
-                // We'll need to fetch the warehouse_id later or use it without ID
+                // Extract warehouse name from error message if possible
+                $warehouseName = $warehouseData['name'] ?? "Warehouse_{$pincode}";
+                if (preg_match("/name:\s*([^\s]+)/i", $errorMsgString, $matches)) {
+                    $warehouseName = $matches[1];
+                    Log::info("Extracted warehouse name from error message: {$warehouseName}");
+                }
+                
                 try {
                     $warehouse = Warehouse::updateOrCreate(
                         [
@@ -508,7 +585,7 @@ class DelhiveryLtlService implements DeliveryServiceInterface
                             'city' => $warehouseData['city'] ?? '',
                             'state' => $warehouseData['state'] ?? '',
                             'country' => $warehouseData['country'] ?? 'India',
-                            'name' => $warehouseData['name'] ?? "Warehouse_{$pincode}",
+                            'name' => $warehouseName,
                             'address_details' => $warehouseData['address_details'] ?? [],
                             'business_hours' => $warehouseData['business_hours'] ?? [],
                             'pick_up_hours' => $warehouseData['pick_up_hours'] ?? [],
@@ -520,13 +597,14 @@ class DelhiveryLtlService implements DeliveryServiceInterface
                         ]
                     );
                     
-                    Log::info("Warehouse record created in DB (exists in Delhivery but ID unknown). DB ID: " . $warehouse->id . ". Note: warehouse_id needs to be fetched from Delhivery.");
-                    Log::warning("Warehouse exists in Delhivery but warehouse_id is not available. You may need to fetch it manually or use pickup_location_name instead of pickup_location_id in manifest creation.");
+                    Log::info("Warehouse record created/updated in DB (exists in Delhivery). DB ID: " . $warehouse->id . ", Name: {$warehouseName}. Note: warehouse_id will be fetched later or use pickup_location_name in manifest creation.");
                     
                     // Return the warehouse even without warehouse_id - the manifest creation can use name instead
                     return $warehouse;
                 } catch (\Exception $e) {
-                    Log::error("Failed to save warehouse record for existing Delhivery warehouse: " . $e->getMessage());
+                    Log::error("Failed to save warehouse record for existing Delhivery warehouse: " . $e->getMessage(), [
+                        'trace' => $e->getTraceAsString()
+                    ]);
                 }
             }
             
@@ -645,7 +723,12 @@ class DelhiveryLtlService implements DeliveryServiceInterface
                     if (is_array($data['error'])) {
                         $msg = $data['error']['message'] ?? null;
                         if ($msg !== null) {
-                            $errorMsg = is_array($msg) ? json_encode($msg) : (string) $msg;
+                            // Handle array of error messages (like ['Transaction Failed: ...'])
+                            if (is_array($msg)) {
+                                $errorMsg = is_array($msg[0] ?? null) ? json_encode($msg) : (string) ($msg[0] ?? json_encode($msg));
+                            } else {
+                                $errorMsg = (string) $msg;
+                            }
                         } else {
                             $errorMsg = json_encode($data['error']);
                         }
@@ -654,7 +737,7 @@ class DelhiveryLtlService implements DeliveryServiceInterface
                     }
                 } else {
                     $msg = $data['message'] ?? 'Warehouse creation failed';
-                    $errorMsg = is_array($msg) ? json_encode($msg) : (string) $msg;
+                    $errorMsg = is_array($msg) ? (is_array($msg[0] ?? null) ? json_encode($msg) : (string) ($msg[0] ?? json_encode($msg))) : (string) $msg;
                 }
                 
                 // Log detailed error information
@@ -696,10 +779,25 @@ class DelhiveryLtlService implements DeliveryServiceInterface
                 ];
             }
             
+            // Extract error message properly for return
+            $returnMessage = 'Warehouse created successfully';
+            if (!$isSuccess) {
+                if (isset($data['error']['message'])) {
+                    $errMsg = $data['error']['message'];
+                    $returnMessage = is_array($errMsg) ? (is_array($errMsg[0] ?? null) ? json_encode($errMsg) : (string) ($errMsg[0] ?? json_encode($errMsg))) : (string) $errMsg;
+                } elseif (isset($data['error'])) {
+                    $returnMessage = is_array($data['error']) ? json_encode($data['error']) : (string) $data['error'];
+                } elseif (isset($data['message'])) {
+                    $returnMessage = is_array($data['message']) ? (is_array($data['message'][0] ?? null) ? json_encode($data['message']) : (string) ($data['message'][0] ?? json_encode($data['message']))) : (string) $data['message'];
+                } else {
+                    $returnMessage = 'Warehouse creation failed';
+                }
+            }
+            
             return [
                 'success' => $isSuccess,
                 'warehouse_id' => $warehouseId,
-                'message' => $isSuccess ? 'Warehouse created successfully' : ($data['message'] ?? ($data['data']['message'] ?? ($data['error'] ?? 'Failed'))),
+                'message' => $returnMessage,
                 'data' => $data,
             ];
         } catch (\Exception $e) {
@@ -935,7 +1033,9 @@ class DelhiveryLtlService implements DeliveryServiceInterface
             
             for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
                 if ($attempt > 1) {
-                    usleep($retryDelay * 1000000); // Convert to microseconds
+                    // Use 5 seconds delay for the last retry, otherwise use regular retryDelay
+                    $delay = ($attempt == $maxRetries) ? 5 : $retryDelay;
+                    usleep($delay * 1000000); // Convert to microseconds
                 }
                 
                 $statusResult = $this->getManifestStatus($jobId, $test);

@@ -302,7 +302,8 @@ class UnicommerceApiController extends Controller
 
     // ✅ Store clientid (or full webhook) in request for later use
     $request->attributes->set('clientid', $webhook->id);
-    $request->attributes->set('test', $webhook->test);
+    // Cast test to int (0 = production, 1 = test) - preserve 0 value correctly
+    $request->attributes->set('test', (int) $webhook->test);
     $request->attributes->set('webhook', $webhook);
 
     return null; // Token is valid
@@ -623,9 +624,10 @@ class UnicommerceApiController extends Controller
             ]
         ];
       
-  
+        // Get test value (0 = production, 1 = test) - ensure it's an integer
+        $test = (int) $request->attributes->get('test', 1);
       
-        $bluedartResponse = $this->bluedartService->createWaybill($bluedartPayload,null,$request->attributes->get('clientid'), $request->attributes->get('test'));
+        $bluedartResponse = $this->bluedartService->createWaybill($bluedartPayload,null,$request->attributes->get('clientid'), $test);
         if (!$bluedartResponse['success']) {
             return response()->json([
                 'status' => 'FAILED',
@@ -746,7 +748,8 @@ class UnicommerceApiController extends Controller
             $deliveryPincode = $payload['deliveryAddressDetails']['pincode'];
             $senderPincode = $payload['pickupAddressDetails']['pincode'];
             $weightInKg = (float) ($payload['Shipment']['weight'] / 1000); // Convert grams to kg
-            $test = $request->attributes->get('test');
+            // Get test value (0 = production, 1 = test) - ensure it's an integer
+            $test = (int) $request->attributes->get('test', 1);
             $isProduction = !$test && app()->environment('production');
             
             // ============================================
@@ -825,10 +828,11 @@ class UnicommerceApiController extends Controller
                 $warehouseData['name'] = "Warehouse_{$fallbackPincode}";
             }
             
+            // Use the test value we already determined at the start of the function
             $warehouse = $this->delhiveryService->getOrCreateWarehouse(
                 $senderPincode,
                 $warehouseData,
-                $request->attributes->get('test')
+                $test
             );
 
             // If warehouse creation fails, try fallback pincode 400059
@@ -838,10 +842,11 @@ class UnicommerceApiController extends Controller
                 $fallbackWarehouseData['pin_code'] = $fallbackPincode;
                 $fallbackWarehouseData['name'] = "Warehouse_{$fallbackPincode}";
                 
+                // Use the same test value as above
                 $warehouse = $this->delhiveryService->getOrCreateWarehouse(
                     $fallbackPincode,
                     $fallbackWarehouseData,
-                    $request->attributes->get('test')
+                    $test
                 );
             }
 
@@ -930,12 +935,12 @@ class UnicommerceApiController extends Controller
              */
             $mappedRequest = $this->mapToDelhiveryPayload($payload, $invoiceLink, $warehouse);
 
-            // Call Delhivery API
+            // Call Delhivery API - use the test value we already determined
             $delhiveryResponse = $this->delhiveryService->createWaybill(
                 $mappedRequest,
                 null,
                 $request->attributes->get('clientid'),
-                $request->attributes->get('test')
+                $test
             );
 
             if (!$delhiveryResponse['success']) {
@@ -980,7 +985,7 @@ class UnicommerceApiController extends Controller
             // If still no waybill after automatic polling, poll once more (optimized - no sleep)
             if (!$delhiveryWaybill && $jobId) {
                 // Poll status one more time immediately (no sleep for faster response)
-                $statusResult = $this->delhiveryService->getManifestStatus($jobId, $request->attributes->get('test'));
+                $statusResult = $this->delhiveryService->getManifestStatus($jobId, $test);
                 
                 if ($statusResult['success'] && ($statusResult['lr_number'] || !empty($statusResult['awb_numbers']))) {
                     // Get LR number (primary tracking ID) or first AWB number
@@ -1108,7 +1113,7 @@ class UnicommerceApiController extends Controller
                         // Get label URLs from Delhivery API - use LR number if available, otherwise use waybill
                         $labelUrlsResponse = $this->delhiveryService->getLabelUrls(
                             $labelIdentifier,
-                            $request->attributes->get('test')
+                            $test
                         );
                         
                         if ($labelUrlsResponse['success'] && !empty($labelUrlsResponse['label_urls'])) {
@@ -1117,7 +1122,7 @@ class UnicommerceApiController extends Controller
                                 $labelIdentifier,
                                 $labelUrlsResponse['label_urls'],
                                 $booking->id,
-                                $request->attributes->get('test')
+                                $test
                             );
                             
                             if ($shippingLabelUrl) {
@@ -1339,6 +1344,7 @@ class UnicommerceApiController extends Controller
             'lrn' => '',
             'payment_mode' => strtolower($payload['paymentMode']),
             'weight' => (float) ($payload['Shipment']['weight']), // Weight in grams as per API docs
+            'freight_mode' => 'fop',
             'dropoff_location' => $dropoffLocation,
             'rov_insurance' => true,
             'invoices' => $invoices,
@@ -1346,7 +1352,6 @@ class UnicommerceApiController extends Controller
             'dimensions' => $dimensions,
             'doc_data' => $docData,
             'fm_pickup' => false,
-            // Note: freight_mode is only required for retail clients, not for B2B accounts
             'billing_address' => $billingAddress,
         ];
         
@@ -1449,7 +1454,8 @@ class UnicommerceApiController extends Controller
 
         try {
             $waybill = $request->input('waybill');
-            $test = $request->attributes->get('test', 1);
+            // Get test value (0 = production, 1 = test) - ensure it's an integer
+            $test = (int) $request->attributes->get('test', 1);
 
             // Find booking by waybill or LR number
             $booking = booking::where('waybills', $waybill)
