@@ -745,19 +745,33 @@ class UnicommerceApiController extends Controller
 
     /**
      * Handle Delhivery waybill creation
+     * 
+     * Serviceability checks are performed for BOTH:
+     * 1. Delivery pincode (destination) - MUST be serviceable
+     * 2. Pickup/Sender pincode (origin) - MUST be serviceable (with fallback option)
+     * 
+     * Both checks use the Delhivery serviceability API and results are cached in database.
      */
     private function handleDelhiveryWaybill(Request $request, array $payload, string $invoiceLink, float $startTime): JsonResponse
     {
         try {
-            // Step 1: Check delivery pincode serviceability first (most important)
+            // Extract pincodes and weight
             $deliveryPincode = $payload['deliveryAddressDetails']['pincode'];
             $senderPincode = $payload['pickupAddressDetails']['pincode'];
             $weightInKg = (float) ($payload['Shipment']['weight'] / 1000); // Convert grams to kg
             $test = $request->attributes->get('test');
             
-            \Log::info("Delhivery Waybill: Checking delivery pincode serviceability - Pincode: {$deliveryPincode}, Weight: {$weightInKg} kg");
+            \Log::info("Delhivery Waybill: Starting serviceability checks for both pincodes", [
+                'delivery_pincode' => $deliveryPincode,
+                'pickup_pincode' => $senderPincode,
+                'weight_kg' => $weightInKg,
+            ]);
             
-            // Check delivery pincode serviceability
+            // ============================================
+            // Step 1: Check DELIVERY pincode serviceability (MANDATORY)
+            // ============================================
+            \Log::info("Delhivery Waybill: [1/2] Checking DELIVERY pincode serviceability - Pincode: {$deliveryPincode}, Weight: {$weightInKg} kg");
+            
             $deliveryServiceabilityCheck = $this->delhiveryService->checkPincodeServiceability(
                 $deliveryPincode,
                 $weightInKg,
@@ -767,14 +781,21 @@ class UnicommerceApiController extends Controller
             \Log::info("Delhivery Waybill: Delivery pincode serviceability result", [
                 'success' => $deliveryServiceabilityCheck['success'] ?? false,
                 'is_serviceable' => $deliveryServiceabilityCheck['is_serviceable'] ?? false,
+                'cached' => $deliveryServiceabilityCheck['cached'] ?? false,
             ]);
 
+            // Delivery pincode MUST be serviceable - fail immediately if not
             if (!$deliveryServiceabilityCheck['success'] || !$deliveryServiceabilityCheck['is_serviceable']) {
                 $response = response()->json([
                     'status' => 'FAILED',
                     'reason' => 'PINCODE_NOT_SERVICEABLE',
                     'message' => 'Delivery pincode ' . $deliveryPincode . ' is not serviceable by Delhivery for weight ' . $weightInKg . ' kg',
-                    'details' => $deliveryServiceabilityCheck['serviceability_data'] ?? []
+                    'details' => [
+                        'pincode_type' => 'delivery',
+                        'pincode' => $deliveryPincode,
+                        'weight_kg' => $weightInKg,
+                        'serviceability_data' => $deliveryServiceabilityCheck['serviceability_data'] ?? []
+                    ]
                 ], 400);
 
                 $executionTime = microtime(true) - $startTime;
@@ -782,8 +803,10 @@ class UnicommerceApiController extends Controller
                 return $response;
             }
 
-            // Step 2: Check sender pincode serviceability before warehouse creation
-            \Log::info("Delhivery Waybill: Checking sender pincode serviceability - Pincode: {$senderPincode}, Weight: {$weightInKg} kg");
+            // ============================================
+            // Step 2: Check PICKUP/SENDER pincode serviceability (MANDATORY)
+            // ============================================
+            \Log::info("Delhivery Waybill: [2/2] Checking PICKUP pincode serviceability - Pincode: {$senderPincode}, Weight: {$weightInKg} kg");
             
             $senderServiceabilityCheck = $this->delhiveryService->checkPincodeServiceability(
                 $senderPincode,
@@ -791,9 +814,10 @@ class UnicommerceApiController extends Controller
                 $test
             );
             
-            \Log::info("Delhivery Waybill: Sender pincode serviceability result", [
+            \Log::info("Delhivery Waybill: Pickup pincode serviceability result", [
                 'success' => $senderServiceabilityCheck['success'] ?? false,
                 'is_serviceable' => $senderServiceabilityCheck['is_serviceable'] ?? false,
+                'cached' => $senderServiceabilityCheck['cached'] ?? false,
             ]);
 
             // Fallback pincode if sender pincode is not serviceable
