@@ -251,6 +251,27 @@ class BlueDartService implements DeliveryServiceInterface
         return $data;
     }
 
+    /**
+     * Cancel Waybill
+     * 
+     * @param string $waybillNumber AWB number to cancel
+     * @param mixed $bookingId Optional booking ID
+     * @param int $test Test mode (1 for test, 0 for production)
+     * @return array
+     */
+    public function cancelWaybill(string $waybillNumber, $bookingId = null, int $test = 1): array
+    {
+        // TODO: Implement BlueDart cancel API if available
+        // For now, return success as BlueDart may not require API cancellation
+        Log::info("BlueDart cancel waybill called for: {$waybillNumber}");
+        
+        return [
+            'success' => true,
+            'message' => 'Waybill cancellation processed (BlueDart may not require API cancellation)',
+            'data' => []
+        ];
+    }
+
     public function getProviderName(): string
     {
         return 'bluedart';

@@ -1520,105 +1520,156 @@ class UnicommerceApiController extends Controller
         }
     }
     public function cancelWaybill(Request $request): JsonResponse
-{
-    $startTime = microtime(true);
-    
-    // Authenticate the request using token
-    $authError = $this->authenticateRequest($request);
-    if ($authError) {
-        $executionTime = microtime(true) - $startTime;
-        $this->logApiRequest($request, $authError, 'waybill_cancel', $executionTime);
-        return $authError;
-    }
-
-    // Validate request payload
-    $validator = Validator::make($request->all(), [
-        'waybill' => 'required|string'
-    ]);
-
-    if ($validator->fails()) {
-        $response = response()->json([
-            'status' => 'VALIDATION_ERROR',
-            'message' => 'Invalid request data',
-            'errors' => $validator->errors()
-        ], 400);
+    {
+        $startTime = microtime(true);
         
-        $executionTime = microtime(true) - $startTime;
-        $this->logApiRequest($request, $response, 'waybill_cancel', $executionTime);
-        return $response;
-    }
-
-    try {
-        $waybill = $request->input('waybill');
-
-        // Find booking by waybill
-        $booking = booking::where('waybills', $waybill)->first();
-
-        if (!$booking) {
-            $response = response()->json([
-                'status' => 'FAILED',
-                'waybill' => $waybill,
-                'errorMessage' => 'Waybill not found'
-            ], 404);
-            
+        // Authenticate the request using token
+        $authError = $this->authenticateRequest($request);
+        if ($authError) {
             $executionTime = microtime(true) - $startTime;
-            $this->logApiRequest($request, $response, 'waybill_cancel', $executionTime, $waybill);
-            return $response;
+            $this->logApiRequest($request, $authError, 'waybill_cancel', $executionTime);
+            return $authError;
         }
 
-        // If already cancelled
-        if ($booking->status === 'CANCELLED') {
+        // Validate request payload
+        $validator = Validator::make($request->all(), [
+            'waybill' => 'required|string'
+        ]);
+
+        if ($validator->fails()) {
             $response = response()->json([
-                'status' => 'FAILED',
-                'waybill' => $waybill,
-                'errorMessage' => 'Pickup already cancelled'
+                'status' => 'VALIDATION_ERROR',
+                'message' => 'Invalid request data',
+                'errors' => $validator->errors()
             ], 400);
             
             $executionTime = microtime(true) - $startTime;
-            $this->logApiRequest($request, $response, 'waybill_cancel', $executionTime, $waybill);
+            $this->logApiRequest($request, $response, 'waybill_cancel', $executionTime);
             return $response;
         }
 
-        // Update booking status
-        $booking->update([
-            'status' => 'CANCELLED'
-        ]);
+        try {
+            $waybill = $request->input('waybill');
+            $test = $request->attributes->get('test', 1);
 
-        // Create booking log
-        $booking->bookingLogs()->create([
-            'status' => 'CANCELLED',
-            'remark' => 'Pickup cancelled via API request',
-            'bookingno' => $booking->id,
-            'currentstatus' => 'CANCELLED',
-            'createdbyy' => 'API', // can be dynamic if you have user_id
-            'deliverydate' => null,
-            'expecteddeliverydate' => null
-        ]);
+            // Find booking by waybill or LR number
+            $booking = booking::where('waybills', $waybill)
+                ->orWhere('lr_number', $waybill)
+                ->first();
 
-        $response = response()->json([
-            'status' => 'SUCCESS',
-            'waybill' => $waybill,
-            'errorMessage' => 'Pickup is successfully cancelled'
-        ], 200);
+            if (!$booking) {
+                $response = response()->json([
+                    'status' => 'FAILED',
+                    'waybill' => $waybill,
+                    'errorMessage' => 'Waybill not found'
+                ], 404);
+                
+                $executionTime = microtime(true) - $startTime;
+                $this->logApiRequest($request, $response, 'waybill_cancel', $executionTime, $waybill);
+                return $response;
+            }
 
-        $executionTime = microtime(true) - $startTime;
-        $this->logApiRequest($request, $response, 'waybill_cancel', $executionTime, $waybill);
-        
-        return $response;
+            // If already cancelled
+            if ($booking->status === 'CANCELLED') {
+                $response = response()->json([
+                    'status' => 'FAILED',
+                    'waybill' => $waybill,
+                    'errorMessage' => 'Pickup already cancelled'
+                ], 400);
+                
+                $executionTime = microtime(true) - $startTime;
+                $this->logApiRequest($request, $response, 'waybill_cancel', $executionTime, $waybill);
+                return $response;
+            }
 
-    } catch (\Exception $e) {
-        $response = response()->json([
-            'status' => 'FAILED',
-            'waybill' => $request->input('waybill'),
-            'errorMessage' => 'Pickup is not cancelled due to error: ' . $e->getMessage()
-        ], 500);
-        
-        $executionTime = microtime(true) - $startTime;
-        $this->logApiRequest($request, $response, 'waybill_cancel', $executionTime, $request->input('waybill'));
-        
-        return $response;
+            // Determine service provider
+            // Delhivery shipments have lr_number, BlueDart doesn't
+            $serviceProvider = null;
+            $cancelIdentifier = $waybill;
+            
+            if (!empty($booking->lr_number)) {
+                // Delhivery shipment - use LR number for cancellation
+                $serviceProvider = $this->delhiveryService;
+                $cancelIdentifier = $booking->lr_number;
+                \Log::info("Cancelling Delhivery waybill. LR: {$cancelIdentifier}, Waybill: {$waybill}");
+            } else {
+                // BlueDart shipment - use waybill number
+                $serviceProvider = $this->bluedartService;
+                \Log::info("Cancelling BlueDart waybill. Waybill: {$waybill}");
+            }
+
+            // Step 1: Call service API to cancel waybill
+            \Log::info("Calling cancel API for waybill: {$cancelIdentifier} (Provider: " . $serviceProvider->getProviderName() . ")");
+            
+            $cancelResult = $serviceProvider->cancelWaybill($cancelIdentifier, $booking->id, $test);
+            
+            \Log::info("Cancel API response", [
+                'success' => $cancelResult['success'] ?? false,
+                'message' => $cancelResult['message'] ?? 'No message',
+            ]);
+
+            // Step 2: If API cancellation successful, update database
+            if ($cancelResult['success']) {
+                // Update booking status
+                $booking->update([
+                    'status' => 'CANCELLED'
+                ]);
+
+                // Create booking log
+                $booking->bookingLogs()->create([
+                    'status' => 'CANCELLED',
+                    'remark' => 'Pickup cancelled via API request - ' . $serviceProvider->getProviderName(),
+                    'bookingno' => $booking->id,
+                    'currentstatus' => 'CANCELLED',
+                    'createdbyy' => 'API',
+                    'deliverydate' => null,
+                    'expecteddeliverydate' => null
+                ]);
+
+                \Log::info("Waybill cancelled successfully. Waybill: {$waybill}, Provider: " . $serviceProvider->getProviderName());
+
+                $response = response()->json([
+                    'status' => 'SUCCESS',
+                    'waybill' => $waybill,
+                    'errorMessage' => 'Pickup is successfully cancelled',
+                    'provider' => $serviceProvider->getProviderName(),
+                ], 200);
+            } else {
+                // API cancellation failed
+                $errorMsg = $cancelResult['message'] ?? 'Unknown error';
+                \Log::error("Cancel API failed for waybill: {$waybill}. Error: {$errorMsg}");
+                
+                $response = response()->json([
+                    'status' => 'FAILED',
+                    'waybill' => $waybill,
+                    'errorMessage' => 'Failed to cancel waybill: ' . $errorMsg,
+                    'provider' => $serviceProvider->getProviderName(),
+                    'details' => $cancelResult['data'] ?? []
+                ], 400);
+            }
+
+            $executionTime = microtime(true) - $startTime;
+            $this->logApiRequest($request, $response, 'waybill_cancel', $executionTime, $waybill);
+            
+            return $response;
+
+        } catch (\Exception $e) {
+            \Log::error('Cancel Waybill Exception: ' . $e->getMessage(), [
+                'trace' => $e->getTraceAsString()
+            ]);
+            
+            $response = response()->json([
+                'status' => 'FAILED',
+                'waybill' => $request->input('waybill'),
+                'errorMessage' => 'Pickup is not cancelled due to error: ' . $e->getMessage()
+            ], 500);
+            
+            $executionTime = microtime(true) - $startTime;
+            $this->logApiRequest($request, $response, 'waybill_cancel', $executionTime, $request->input('waybill'));
+            
+            return $response;
+        }
     }
-}
 
 public function waybillDetails(Request $request): JsonResponse
 {

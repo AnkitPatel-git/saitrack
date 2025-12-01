@@ -28,4 +28,14 @@ interface DeliveryServiceInterface
      * @return string
      */
     public function getProviderName(): string;
+
+    /**
+     * Cancel a waybill
+     *
+     * @param string $waybillNumber Waybill/LR number to cancel
+     * @param mixed $bookingId Optional booking ID
+     * @param int $test Test mode (1 for test, 0 for production)
+     * @return array
+     */
+    public function cancelWaybill(string $waybillNumber, $bookingId = null, int $test = 1): array;
 }

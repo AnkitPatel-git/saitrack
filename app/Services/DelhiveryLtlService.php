@@ -1339,6 +1339,97 @@ class DelhiveryLtlService implements DeliveryServiceInterface
         ];
     }
 
+    /**
+     * Cancel Waybill/LR
+     * Endpoint: DELETE /lrn/cancel/{lr_number}
+     * 
+     * @param string $waybillNumber LR number to cancel
+     * @param mixed $bookingId Optional booking ID
+     * @param int $test Test mode (1 for test, 0 for production)
+     * @return array
+     */
+    public function cancelWaybill(string $waybillNumber, $bookingId = null, int $test = 1): array
+    {
+        $jwt = $this->authenticate($test);
+        $baseUrl = $test ? $this->baseUrl : $this->baseUrlProd;
+        $endpoint = "/lrn/cancel/{$waybillNumber}";
+
+        try {
+            $response = Http::withHeaders([
+                'Authorization' => "Bearer {$jwt}",
+                'Content-Type' => 'application/json',
+            ])->delete($baseUrl . $endpoint);
+
+            $data = $response->json();
+
+            $isSuccess = $response->successful() && 
+                        (isset($data['success']) && $data['success'] === true);
+
+            // Extract error message if failed
+            $errorMsg = null;
+            if (!$isSuccess) {
+                if (isset($data['error'])) {
+                    if (is_array($data['error'])) {
+                        $msg = $data['error']['message'] ?? null;
+                        if ($msg !== null) {
+                            $errorMsg = is_array($msg) ? json_encode($msg) : (string) $msg;
+                        } else {
+                            $errorMsg = json_encode($data['error']);
+                        }
+                    } else {
+                        $errorMsg = is_array($data['error']) ? json_encode($data['error']) : (string) $data['error'];
+                    }
+                } else {
+                    $msg = $data['message'] ?? 'Waybill cancellation failed';
+                    $errorMsg = is_array($msg) ? json_encode($msg) : (string) $msg;
+                }
+            }
+
+            $this->logApiCall([
+                'booking_id'      => $bookingId,
+                'api_endpoint'    => $endpoint,
+                'request_payload' => ['lr_number' => $waybillNumber],
+                'response_data'   => $data,
+                'status_code'     => $response->status(),
+                'is_success'      => $isSuccess,
+                'awb_number'      => $waybillNumber,
+                'error_message'   => $errorMsg,
+            ]);
+
+            Log::info('Delhivery Cancel Waybill Response', [
+                'lr_number' => $waybillNumber,
+                'status_code' => $response->status(),
+                'success' => $isSuccess,
+                'message' => $data['message'] ?? null,
+            ]);
+
+            return [
+                'success' => $isSuccess,
+                'message' => $isSuccess ? 'Waybill cancelled successfully' : ($errorMsg ?? 'Waybill cancellation failed'),
+                'data' => $data,
+            ];
+        } catch (\Exception $e) {
+            Log::error('Delhivery LTL Cancel Waybill Exception: ' . $e->getMessage());
+            
+            $this->logApiCall([
+                'booking_id'      => $bookingId,
+                'api_endpoint'    => $endpoint,
+                'request_payload' => ['lr_number' => $waybillNumber],
+                'response_data'   => [],
+                'status_code'     => 500,
+                'is_success'      => false,
+                'awb_number'      => $waybillNumber,
+                'error_message'   => $e->getMessage(),
+            ]);
+
+            return [
+                'success' => false,
+                'message' => 'Exception: ' . $e->getMessage(),
+                'data' => [],
+            ];
+        }
+    }
+
     public function getProviderName(): string
     {
         return 'delhivery_ltl';
