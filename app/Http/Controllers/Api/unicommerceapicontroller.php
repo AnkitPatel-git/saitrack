@@ -416,23 +416,10 @@ class UnicommerceApiController extends Controller
         $serviceProviderRaw = $webhook->getAttribute('service_provider');
         $serviceProvider = trim(strtolower($serviceProviderRaw ?? 'bluedart')); // Default to bluedart if not set
 
-        // Debug logging - write to both log and error_log for visibility
-        \Log::info('=== WAYBILL ROUTING DEBUG ===');
-        \Log::info('Webhook ID: ' . $webhook->id);
-        \Log::info('Service Provider (raw from DB): ' . var_export($serviceProviderRaw, true));
-        \Log::info('Service Provider (after processing): ' . var_export($serviceProvider, true));
-        \Log::info('Comparison (serviceProvider === delhivery): ' . var_export($serviceProvider === 'delhivery', true));
-        
-        error_log('WAYBILL ROUTING: service_provider=' . var_export($serviceProviderRaw, true) . ', processed=' . var_export($serviceProvider, true) . ', routing=' . ($serviceProvider === 'delhivery' ? 'DELHIVERY' : 'BLUEDART'));
-
         // Route to appropriate service based on webhook configuration
         if ($serviceProvider === 'delhivery') {
-            \Log::info('✅ ROUTING TO DELHIVERY SERVICE');
-            error_log('ROUTING TO DELHIVERY');
             return $this->handleDelhiveryWaybill($request, $payload, $invoiceLink, $startTime);
         } else {
-            \Log::info('✅ ROUTING TO BLUEDART SERVICE (value: ' . $serviceProvider . ')');
-            error_log('ROUTING TO BLUEDART - service_provider was: ' . var_export($serviceProviderRaw, true));
             return $this->handleBlueDartWaybill($request, $payload, $invoiceLink, $startTime);
         }
     } catch (\Exception $e) {
@@ -760,32 +747,24 @@ class UnicommerceApiController extends Controller
             $senderPincode = $payload['pickupAddressDetails']['pincode'];
             $weightInKg = (float) ($payload['Shipment']['weight'] / 1000); // Convert grams to kg
             $test = $request->attributes->get('test');
-            
-            \Log::info("Delhivery Waybill: Starting serviceability checks for both pincodes", [
-                'delivery_pincode' => $deliveryPincode,
-                'pickup_pincode' => $senderPincode,
-                'weight_kg' => $weightInKg,
-            ]);
+            $isProduction = !$test && app()->environment('production');
             
             // ============================================
-            // Step 1: Check DELIVERY pincode serviceability (MANDATORY)
+            // Step 1 & 2: Check BOTH pincodes serviceability in PARALLEL (OPTIMIZED)
             // ============================================
-            \Log::info("Delhivery Waybill: [1/2] Checking DELIVERY pincode serviceability - Pincode: {$deliveryPincode}, Weight: {$weightInKg} kg");
+            $isProduction = !$test && app()->environment('production');
             
-            $deliveryServiceabilityCheck = $this->delhiveryService->checkPincodeServiceability(
-                $deliveryPincode,
-                $weightInKg,
-                $test
-            );
+            // Use parallel checking for better performance
+            $serviceabilityResults = $this->delhiveryService->checkMultiplePincodeServiceability([
+                ['pincode' => $deliveryPincode, 'weight' => $weightInKg, 'key' => 'delivery'],
+                ['pincode' => $senderPincode, 'weight' => $weightInKg, 'key' => 'pickup'],
+            ], $test);
             
-            \Log::info("Delhivery Waybill: Delivery pincode serviceability result", [
-                'success' => $deliveryServiceabilityCheck['success'] ?? false,
-                'is_serviceable' => $deliveryServiceabilityCheck['is_serviceable'] ?? false,
-                'cached' => $deliveryServiceabilityCheck['cached'] ?? false,
-            ]);
+            $deliveryServiceabilityCheck = $serviceabilityResults['delivery'] ?? [];
+            $senderServiceabilityCheck = $serviceabilityResults['pickup'] ?? [];
 
             // Delivery pincode MUST be serviceable - fail immediately if not
-            if (!$deliveryServiceabilityCheck['success'] || !$deliveryServiceabilityCheck['is_serviceable']) {
+            if (empty($deliveryServiceabilityCheck) || !$deliveryServiceabilityCheck['success'] || !$deliveryServiceabilityCheck['is_serviceable']) {
                 $response = response()->json([
                     'status' => 'FAILED',
                     'reason' => 'PINCODE_NOT_SERVICEABLE',
@@ -803,30 +782,11 @@ class UnicommerceApiController extends Controller
                 return $response;
             }
 
-            // ============================================
-            // Step 2: Check PICKUP/SENDER pincode serviceability (MANDATORY)
-            // ============================================
-            \Log::info("Delhivery Waybill: [2/2] Checking PICKUP pincode serviceability - Pincode: {$senderPincode}, Weight: {$weightInKg} kg");
-            
-            $senderServiceabilityCheck = $this->delhiveryService->checkPincodeServiceability(
-                $senderPincode,
-                $weightInKg,
-                $test
-            );
-            
-            \Log::info("Delhivery Waybill: Pickup pincode serviceability result", [
-                'success' => $senderServiceabilityCheck['success'] ?? false,
-                'is_serviceable' => $senderServiceabilityCheck['is_serviceable'] ?? false,
-                'cached' => $senderServiceabilityCheck['cached'] ?? false,
-            ]);
-
             // Fallback pincode if sender pincode is not serviceable
             $fallbackPincode = '400059';
             $useFallbackPincode = false;
 
-            if (!$senderServiceabilityCheck['success'] || !$senderServiceabilityCheck['is_serviceable']) {
-                \Log::warning("Sender pincode {$senderPincode} is not serviceable. Trying fallback pincode: {$fallbackPincode}");
-                
+            if (empty($senderServiceabilityCheck) || !$senderServiceabilityCheck['success'] || !$senderServiceabilityCheck['is_serviceable']) {
                 // Check fallback pincode serviceability
                 $fallbackServiceabilityCheck = $this->delhiveryService->checkPincodeServiceability(
                     $fallbackPincode,
@@ -835,7 +795,6 @@ class UnicommerceApiController extends Controller
                 );
                 
                 if ($fallbackServiceabilityCheck['success'] && $fallbackServiceabilityCheck['is_serviceable']) {
-                    \Log::info("Fallback pincode {$fallbackPincode} is serviceable. Using it for warehouse creation.");
                     $useFallbackPincode = true;
                     $senderPincode = $fallbackPincode;
                 } else {
@@ -874,8 +833,6 @@ class UnicommerceApiController extends Controller
 
             // If warehouse creation fails, try fallback pincode 400059
             if (!$warehouse && !$useFallbackPincode) {
-                \Log::warning('Warehouse creation/retrieval failed for pincode: ' . $senderPincode . '. Trying fallback pincode: ' . $fallbackPincode);
-                
                 // Try fallback pincode
                 $fallbackWarehouseData = $this->prepareWarehouseData($payload);
                 $fallbackWarehouseData['pin_code'] = $fallbackPincode;
@@ -886,16 +843,11 @@ class UnicommerceApiController extends Controller
                     $fallbackWarehouseData,
                     $request->attributes->get('test')
                 );
-                
-                if ($warehouse) {
-                    \Log::info("Successfully created/retrieved warehouse for fallback pincode: {$fallbackPincode}");
-                }
             }
 
             // ✅ FAIL EARLY: If warehouse creation/retrieval failed, return error immediately
             // Do not proceed with manifest creation if warehouse is not available
             if (!$warehouse) {
-                \Log::error('Warehouse creation/retrieval failed for both original and fallback pincodes. Cannot proceed with manifest creation.');
                 
                 // Try to find any existing warehouse in DB as last resort
                 // First try with matching test and serviceBy
@@ -930,7 +882,6 @@ class UnicommerceApiController extends Controller
                 }
                 
                 if ($existingWarehouse && $existingWarehouse->warehouse_id) {
-                    \Log::info('Found existing warehouse in DB with warehouse_id, using it: ' . $existingWarehouse->name);
                     $warehouse = $existingWarehouse;
                 } else {
                     // No warehouse found or created - fail immediately
@@ -957,8 +908,6 @@ class UnicommerceApiController extends Controller
             // ✅ Additional check: Ensure warehouse has either warehouse_id or name
             // If warehouse exists but has no warehouse_id, we can still use pickup_location_name
             if ($warehouse && empty($warehouse->warehouse_id) && empty($warehouse->name)) {
-                \Log::error('Warehouse found but has no warehouse_id or name. Cannot proceed.');
-                
                 $response = response()->json([
                     'status' => 'FAILED',
                     'reason' => 'WAREHOUSE_NOT_CONFIGURED',
@@ -976,11 +925,6 @@ class UnicommerceApiController extends Controller
                 return $response;
             }
             
-            // Log if warehouse exists but without ID (we'll use name instead)
-            if ($warehouse && empty($warehouse->warehouse_id) && !empty($warehouse->name)) {
-                \Log::info('Warehouse exists but has no warehouse_id. Will use pickup_location_name: ' . $warehouse->name);
-            }
-
             /**
              * ✅ Delhivery Mapper - Map request to Delhivery LTL manifest format
              */
@@ -1033,14 +977,9 @@ class UnicommerceApiController extends Controller
             $delhiveryWaybill = $delhiveryResponse['waybill'] ?? null;
             $jobId = $delhiveryResponse['job_id'] ?? null;
             
-            // If still no waybill after automatic polling, wait 1 second and poll once more
+            // If still no waybill after automatic polling, poll once more (optimized - no sleep)
             if (!$delhiveryWaybill && $jobId) {
-                \Log::info("Delhivery manifest status not ready after automatic polling. Waiting 1 second and polling once more for job_id: {$jobId}");
-                
-                // Wait 1 second
-                sleep(1);
-                
-                // Poll status one more time
+                // Poll status one more time immediately (no sleep for faster response)
                 $statusResult = $this->delhiveryService->getManifestStatus($jobId, $request->attributes->get('test'));
                 
                 if ($statusResult['success'] && ($statusResult['lr_number'] || !empty($statusResult['awb_numbers']))) {
@@ -1048,10 +987,7 @@ class UnicommerceApiController extends Controller
                     $delhiveryWaybill = $statusResult['lr_number'] ?? 
                                       (isset($statusResult['awb_numbers']) && !empty($statusResult['awb_numbers']) 
                                        ? $statusResult['awb_numbers'][0] : null);
-                    
-                    \Log::info("Delhivery manifest status retrieved after additional poll. LR: {$delhiveryWaybill}, AWBs: " . json_encode($statusResult['awb_numbers'] ?? []));
                 } else {
-                    \Log::warning("Delhivery manifest status still not ready after additional poll for job_id: {$jobId}. Returning job_id for later polling.");
                     // Return job_id so client can poll later
                     $response = response()->json([
                         'status' => 'PENDING',
@@ -1076,17 +1012,14 @@ class UnicommerceApiController extends Controller
             
             // Use LR number as primary identifier for labels (more reliable than waybill)
             $labelIdentifier = $lrNumber ?? $delhiveryWaybill;
-            
-            // Log the waybill details if available
-            if ($delhiveryWaybill) {
-                \Log::info("Delhivery waybill created successfully. LR: " . ($lrNumber ?? 'N/A') . ", Waybill: {$delhiveryWaybill}, AWBs: " . json_encode($awbNumbers) . ", Label Identifier: {$labelIdentifier}");
-            }
 
-            // ✅ Save booking in DB
+            // ✅ Save booking in DB (use transaction for data consistency)
             $itemNames = collect($payload['Shipment']['items'])->pluck('name')->toArray();
             $contentString = implode(', ', $itemNames);
 
-            $booking = booking::create([
+            \DB::beginTransaction();
+            try {
+                $booking = booking::create([
                 'waybills' => $delhiveryWaybill,
                 'lr_number' => $lrNumber, // Store LR number for Delhivery shipments
                 'cust_name' => 'Waree',
@@ -1137,34 +1070,39 @@ class UnicommerceApiController extends Controller
                 ]);
             }
 
-            // Add log
-            $booking->bookingLogs()->create([
-                'status' => 'Booked',
-                'remark' => 'Shipment created via API',
-                'bookingno' => $booking->id,
-                'currentstatus' => 'Booked',
-                'createdbyy' => 'API',
-            ]);
+                // Add log
+                $booking->bookingLogs()->create([
+                    'status' => 'Booked',
+                    'remark' => 'Shipment created via API',
+                    'bookingno' => $booking->id,
+                    'currentstatus' => 'Booked',
+                    'createdbyy' => 'API',
+                ]);
+                
+                \DB::commit();
+            } catch (\Exception $e) {
+                \DB::rollBack();
+                throw $e;
+            }
 
-            // Shipping label - Get from Delhivery API with retries
+            // Shipping label - Get from Delhivery API with optimized retries
             // Labels may not be immediately available after manifest creation, so we retry
             // Always attempt to get labels when manifest is successfully created
             $shippingLabelUrl = null;
             if ($labelIdentifier) {
-                \Log::info("Fetching Delhivery shipping labels for identifier: {$labelIdentifier} (LR: " . ($lrNumber ?? 'N/A') . ", Waybill: " . ($delhiveryWaybill ?? 'N/A') . ")");
+                // Optimized: Reduced wait time and retries for faster response
+                $maxLabelRetries = $isProduction ? 3 : 5;
+                $labelRetryDelay = $isProduction ? 1 : 2; // seconds
                 
-                // Wait 2 seconds after manifest creation before trying to get labels
-                // Labels may take a moment to be generated
-                sleep(2);
-                
-                $maxLabelRetries = 5;
-                $labelRetryDelay = 2; // seconds
+                // Reduced initial wait - only 1s in production, 2s in test
+                if (!$isProduction) {
+                    usleep(1000000); // 1 second
+                }
                 
                 for ($labelAttempt = 1; $labelAttempt <= $maxLabelRetries; $labelAttempt++) {
                     try {
                         if ($labelAttempt > 1) {
-                            \Log::info("Retrying label fetch (attempt {$labelAttempt}/{$maxLabelRetries}) for identifier: {$labelIdentifier}");
-                            sleep($labelRetryDelay);
+                            usleep($labelRetryDelay * 1000000); // Convert to microseconds
                         }
                         
                         // Get label URLs from Delhivery API - use LR number if available, otherwise use waybill
@@ -1189,34 +1127,23 @@ class UnicommerceApiController extends Controller
                                 \Log::warning("Failed to download/store Delhivery shipping labels for identifier: {$labelIdentifier} (attempt {$labelAttempt})");
                             }
                         } else {
-                            $errorMsg = $labelUrlsResponse['message'] ?? 'Unknown error';
-                            \Log::info("Label URLs not available yet for identifier: {$labelIdentifier} (attempt {$labelAttempt}). Message: {$errorMsg}");
-                            
                             // If this is not the last attempt, continue to retry
                             if ($labelAttempt < $maxLabelRetries) {
                                 continue;
-                            } else {
-                                \Log::warning("Failed to get label URLs from Delhivery after {$maxLabelRetries} attempts for identifier: {$labelIdentifier}");
                             }
                         }
                     } catch (\Exception $e) {
-                        \Log::error("Error fetching Delhivery shipping label (attempt {$labelAttempt}): " . $e->getMessage());
-                        
                         // If this is not the last attempt, continue to retry
                         if ($labelAttempt < $maxLabelRetries) {
                             continue;
-                        } else {
-                            \Log::error("Failed to fetch Delhivery shipping label after {$maxLabelRetries} attempts: " . $e->getMessage());
                         }
                     }
                 }
                 
-                // If still no label after all retries, log warning but don't fail the request
-                if (!$shippingLabelUrl) {
-                    \Log::warning("Could not retrieve shipping label for identifier: {$labelIdentifier} after {$maxLabelRetries} attempts. Manifest was created successfully but label is not available yet.");
+                // If still no label after all retries, continue without label (don't fail request)
+                if (!$shippingLabelUrl && !$isProduction) {
+                    \Log::warning("Could not retrieve shipping label for identifier: {$labelIdentifier} after {$maxLabelRetries} attempts.");
                 }
-            } else {
-                \Log::warning("No waybill/LR number available, cannot fetch shipping label");
             }
 
             // ✅ Success response
@@ -1233,13 +1160,6 @@ class UnicommerceApiController extends Controller
             return $response;
 
         } catch (\Exception $e) {
-            // Log full exception details for debugging
-            \Log::error('Delhivery Waybill Exception: ' . $e->getMessage(), [
-                'file' => $e->getFile(),
-                'line' => $e->getLine(),
-                'trace' => $e->getTraceAsString()
-            ]);
-            
             $errorMessage = $e->getMessage();
             // Ensure error message is always a string
             if (is_array($errorMessage)) {
@@ -1591,22 +1511,13 @@ class UnicommerceApiController extends Controller
                 // Delhivery shipment - use LR number for cancellation
                 $serviceProvider = $this->delhiveryService;
                 $cancelIdentifier = $booking->lr_number;
-                \Log::info("Cancelling Delhivery waybill. LR: {$cancelIdentifier}, Waybill: {$waybill}");
             } else {
                 // BlueDart shipment - use waybill number
                 $serviceProvider = $this->bluedartService;
-                \Log::info("Cancelling BlueDart waybill. Waybill: {$waybill}");
             }
 
             // Step 1: Call service API to cancel waybill
-            \Log::info("Calling cancel API for waybill: {$cancelIdentifier} (Provider: " . $serviceProvider->getProviderName() . ")");
-            
             $cancelResult = $serviceProvider->cancelWaybill($cancelIdentifier, $booking->id, $test);
-            
-            \Log::info("Cancel API response", [
-                'success' => $cancelResult['success'] ?? false,
-                'message' => $cancelResult['message'] ?? 'No message',
-            ]);
 
             // Step 2: If API cancellation successful, update database
             if ($cancelResult['success']) {
@@ -1626,8 +1537,6 @@ class UnicommerceApiController extends Controller
                     'expecteddeliverydate' => null
                 ]);
 
-                \Log::info("Waybill cancelled successfully. Waybill: {$waybill}, Provider: " . $serviceProvider->getProviderName());
-
                 $response = response()->json([
                     'status' => 'SUCCESS',
                     'waybill' => $waybill,
@@ -1637,7 +1546,6 @@ class UnicommerceApiController extends Controller
             } else {
                 // API cancellation failed
                 $errorMsg = $cancelResult['message'] ?? 'Unknown error';
-                \Log::error("Cancel API failed for waybill: {$waybill}. Error: {$errorMsg}");
                 
                 $response = response()->json([
                     'status' => 'FAILED',
@@ -1654,10 +1562,6 @@ class UnicommerceApiController extends Controller
             return $response;
 
         } catch (\Exception $e) {
-            \Log::error('Cancel Waybill Exception: ' . $e->getMessage(), [
-                'trace' => $e->getTraceAsString()
-            ]);
-            
             $response = response()->json([
                 'status' => 'FAILED',
                 'waybill' => $request->input('waybill'),

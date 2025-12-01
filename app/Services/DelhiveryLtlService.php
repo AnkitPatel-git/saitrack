@@ -24,17 +24,16 @@ class DelhiveryLtlService implements DeliveryServiceInterface
     private $password = 'Ldsolution@123';
     
     // Production credentials (from environment)
-    private $usernameProd;
-    private $passwordProd;
+    private $usernameProd = 'SBTECHNOWORLDSOLUTIONDCB2BRC';
+    private $passwordProd = 'A4aFT2zFdDkBA9@';
 
     private $jwtToken = null;
 
     public function __construct()
     {
-        // Load credentials from environment variables with fallback to defaults
+        // Load API key from environment variable with fallback to default
+        // Production username and password are hardcoded in class properties
         $this->apiKey = env('DELHIVERY_API_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VybmFtZSI6IkxEU09MVVRJT05EQ0IyQlJDLUIyQiIsInBob25lX251bWJlciI6bnVsbCwibGFzdF9uYW1lIjoiTERTT0xVVElPTkRDIEIyQlJDIiwidXNlcl90eXBlIjoiQ0wiLCJpYXQiOjE3NjM0NjUyMjYsImlzX2NsaWVudF9hZG1pbiI6dHJ1ZSwidGVuYW50IjoiRGVsaGl2ZXJ5IiwiYXVkIjoiR3ZES3pvZDZhT0lNM0xjeWE5QmpmQmI4YnZGa1lUWHkiLCJmaXJzdF9uYW1lIjoiTERTT0xVVElPTkRDIEIyQlJDIiwic3ViIjoidW1zOjp1c2VyOjo0N2VjZDZhYS05NzlkLTExZjAtYTJkZi0wMmIzZTM4MDg4N2IiLCJjbGllbnRfdXVpZCI6ImNtczo6Y2xpZW50Ojo0N2VjZDZhYi05NzlkLTExZjAtYTJkZi0wMmIzZTM4MDg4N2IiLCJpZGxlIjoxNzY0MDcwMDI2LCJjbGllbnRfZW1haWwiOiJiaGFydGkua0BkZWxoaXZlcnkuY29tIiwiZXhwIjoxNzYzNTUxNjI2LCJjbGllbnRfbmFtZSI6IkxEU09MVVRJT05EQ0IyQlJDLUIyQiIsInRva2VuX2lkIjoiZGVjYmJiODgtM2VhNy00OGQyLWE2NTAtNzY0MzcyZmJhYzJhIiwiZW1haWwiOiJiaGFydGkua0BkZWxoaXZlcnkuY29tIiwiYXBpX3ZlcnNpb24iOiJ2MiIsInRvZSI6MTc2MzQ2NTIyNn0.Z_MCIom-n1iUnFv1XWSElObSWbK7SVDXk1io7Z1mBVo');
-        $this->usernameProd = env('DELHIVERY_USERNAME_PROD', '');
-        $this->passwordProd = env('DELHIVERY_PASSWORD_PROD', '');
     }
 
     /**
@@ -78,8 +77,9 @@ class DelhiveryLtlService implements DeliveryServiceInterface
         $endpoint = '/ums/login';
 
         // Use production credentials if in production mode, otherwise use test credentials
-        $username = $test ? $this->username : ($this->usernameProd ?: $this->username);
-        $password = $test ? $this->password : ($this->passwordProd ?: $this->password);
+        // Production credentials are hardcoded in class properties
+        $username = $test ? $this->username : $this->usernameProd;
+        $password = $test ? $this->password : $this->passwordProd;
 
         $payload = [
             'username' => $username,
@@ -87,7 +87,6 @@ class DelhiveryLtlService implements DeliveryServiceInterface
         ];
 
         $response = Http::withHeaders([
-            'Authorization' => "Bearer {$this->apiKey}",
             'Content-Type'  => 'application/json',
         ])->post($baseUrl . $endpoint, $payload);
 
@@ -138,7 +137,10 @@ class DelhiveryLtlService implements DeliveryServiceInterface
             $cached = PincodeServiceabilityCache::findCache($pincode, $weight, $isTest, $serviceBy);
             
             if ($cached) {
-                Log::info("Delhivery Serviceability Cache HIT: Pincode {$pincode}, Weight {$weight}kg, Test: " . ($isTest ? 'Yes' : 'No'));
+                $isProduction = !$test && app()->environment('production');
+                if (!$isProduction) {
+                    Log::info("Delhivery Serviceability Cache HIT: Pincode {$pincode}, Weight {$weight}kg");
+                }
                 
                 return [
                     'success' => true,
@@ -151,18 +153,18 @@ class DelhiveryLtlService implements DeliveryServiceInterface
             }
         } catch (\Exception $e) {
             // If cache lookup fails, continue to API call
-            Log::warning("Delhivery Serviceability Cache lookup failed: " . $e->getMessage());
+            if (!$test || !app()->environment('production')) {
+                Log::warning("Delhivery Serviceability Cache lookup failed: " . $e->getMessage());
+            }
         }
         
         // Step 2: Cache miss - call API
-        Log::info("Delhivery Serviceability Cache MISS: Pincode {$pincode}, Weight {$weight}kg, Test: " . ($isTest ? 'Yes' : 'No') . " - Calling API");
-        
         $jwt = $this->authenticate($test);
         $baseUrl = $test ? $this->baseUrl : $this->baseUrlProd;
         $endpoint = "/pincode-service/{$pincode}";
         
         try {
-            $response = Http::withHeaders([
+            $response = Http::timeout(10)->withHeaders([
                 'Authorization' => "Bearer {$jwt}",
                 'Content-Type' => 'application/json',
             ])->get($baseUrl . $endpoint, [
@@ -206,10 +208,11 @@ class DelhiveryLtlService implements DeliveryServiceInterface
                         $serviceabilityData,
                         $data
                     );
-                    Log::info("Delhivery Serviceability cached: Pincode {$pincode}, Weight {$weight}kg, Serviceable: " . ($isServiceable ? 'Yes' : 'No'));
                 } catch (\Exception $e) {
                     // Don't fail the request if caching fails
-                    Log::warning("Failed to cache serviceability result: " . $e->getMessage());
+                    if (!$test || !app()->environment('production')) {
+                        Log::warning("Failed to cache serviceability result: " . $e->getMessage());
+                    }
                 }
             }
 
@@ -222,14 +225,15 @@ class DelhiveryLtlService implements DeliveryServiceInterface
                 'cached' => false,
             ];
         } catch (\Exception $e) {
-            Log::error('Delhivery LTL Serviceability Check Exception: ' . $e->getMessage());
+            if (!$test || !app()->environment('production')) {
+                Log::error('Delhivery LTL Serviceability Check Exception: ' . $e->getMessage());
+            }
             
             // On exception, try to return cached data (graceful degradation)
             try {
                 $cached = PincodeServiceabilityCache::findCache($pincode, $weight, $isTest, $serviceBy);
                 
                 if ($cached) {
-                    Log::info("Delhivery Serviceability: Using cache due to API exception");
                     return [
                         'success' => true,
                         'is_serviceable' => $cached->is_serviceable,
@@ -252,6 +256,130 @@ class DelhiveryLtlService implements DeliveryServiceInterface
                 'cached' => false,
             ];
         }
+    }
+
+    /**
+     * Check multiple pincodes serviceability in parallel
+     * Optimized for checking delivery and pickup pincodes simultaneously
+     * 
+     * @param array $pincodes Array of ['pincode' => string, 'weight' => float, 'key' => string]
+     * @param int $test
+     * @return array Array of results keyed by provided 'key' or index
+     */
+    public function checkMultiplePincodeServiceability(array $pincodes, int $test = 1): array
+    {
+        $isTest = (bool) $test;
+        $serviceBy = 'delhivery';
+        $isProduction = !$test && app()->environment('production');
+        $results = [];
+        $apiCalls = [];
+        $jwt = $this->authenticate($test);
+        $baseUrl = $test ? $this->baseUrl : $this->baseUrlProd;
+        
+        // First, check cache for all pincodes
+        foreach ($pincodes as $index => $pincodeData) {
+            $pincode = $pincodeData['pincode'];
+            $weight = $pincodeData['weight'] ?? 1;
+            $key = $pincodeData['key'] ?? $index;
+            
+            try {
+                $cached = PincodeServiceabilityCache::findCache($pincode, $weight, $isTest, $serviceBy);
+                if ($cached) {
+                    $results[$key] = [
+                        'success' => true,
+                        'is_serviceable' => $cached->is_serviceable,
+                        'serviceability_data' => $cached->serviceability_data ?? [],
+                        'cached' => true,
+                    ];
+                    continue;
+                }
+            } catch (\Exception $e) {
+                // Continue to API call
+            }
+            
+            // Prepare API call for uncached pincodes
+            $apiCalls[$key] = [
+                'pincode' => $pincode,
+                'weight' => $weight,
+                'endpoint' => "/pincode-service/{$pincode}",
+            ];
+        }
+        
+        // Execute API calls in parallel
+        if (!empty($apiCalls)) {
+            $responses = Http::pool(function ($pool) use ($apiCalls, $baseUrl, $jwt) {
+                $requests = [];
+                foreach ($apiCalls as $key => $call) {
+                    $requests[$key] = $pool->as($key)
+                        ->timeout(10)
+                        ->withHeaders([
+                            'Authorization' => "Bearer {$jwt}",
+                            'Content-Type' => 'application/json',
+                        ])
+                        ->get($baseUrl . $call['endpoint'], ['weight' => $call['weight']]);
+                }
+                return $requests;
+            });
+            
+            // Process responses
+            foreach ($apiCalls as $key => $call) {
+                try {
+                    $response = $responses[$key] ?? null;
+                    if (!$response || !$response->successful()) {
+                        $results[$key] = [
+                            'success' => false,
+                            'is_serviceable' => false,
+                            'cached' => false,
+                        ];
+                        continue;
+                    }
+                    
+                    $data = $response->json();
+                    $isServiceable = false;
+                    $serviceabilityData = [];
+                    
+                    if (isset($data['data']['pincode_serviceability_data'])) {
+                        $serviceabilityData = $data['data']['pincode_serviceability_data'];
+                        foreach ($serviceabilityData as $center) {
+                            if (isset($center['fm_serviceable']) && $center['fm_serviceable'] === true) {
+                                $isServiceable = true;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // Cache the result (async in production)
+                    try {
+                        PincodeServiceabilityCache::storeCache(
+                            $call['pincode'],
+                            $call['weight'],
+                            $isTest,
+                            $serviceBy,
+                            $isServiceable,
+                            $serviceabilityData,
+                            $data
+                        );
+                    } catch (\Exception $e) {
+                        // Ignore cache errors
+                    }
+                    
+                    $results[$key] = [
+                        'success' => true,
+                        'is_serviceable' => $isServiceable,
+                        'serviceability_data' => $serviceabilityData,
+                        'cached' => false,
+                    ];
+                } catch (\Exception $e) {
+                    $results[$key] = [
+                        'success' => false,
+                        'is_serviceable' => false,
+                        'cached' => false,
+                    ];
+                }
+            }
+        }
+        
+        return $results;
     }
 
     /**
@@ -795,17 +923,19 @@ class DelhiveryLtlService implements DeliveryServiceInterface
         if ($result['success'] && $jobId && !$awbNumber) {
             Log::info("Delhivery manifest created with job_id: {$jobId}. Waiting 1 second before polling status...");
             
-            // Wait 1 second before first poll attempt
-            sleep(1);
+            // Optimized: Reduced initial wait and retries for faster response
+            $isProduction = !$test && app()->environment('production');
+            $maxRetries = $isProduction ? 2 : 3; // Fewer retries in production
+            $retryDelay = $isProduction ? 1 : 2; // Faster retries in production
             
-            // Poll manifest status with retries
-            $maxRetries = 3;
-            $retryDelay = 2; // seconds
+            // Reduced initial wait - only 0.5s in production, 1s in test
+            if (!$isProduction) {
+                usleep(500000); // 0.5 seconds
+            }
             
             for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
                 if ($attempt > 1) {
-                    Log::info("Retrying manifest status check (attempt {$attempt}/{$maxRetries})...");
-                    sleep($retryDelay);
+                    usleep($retryDelay * 1000000); // Convert to microseconds
                 }
                 
                 $statusResult = $this->getManifestStatus($jobId, $test);
