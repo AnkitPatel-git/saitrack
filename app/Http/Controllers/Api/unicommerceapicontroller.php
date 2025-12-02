@@ -933,7 +933,7 @@ class UnicommerceApiController extends Controller
             /**
              * ✅ Delhivery Mapper - Map request to Delhivery LTL manifest format
              */
-            $mappedRequest = $this->mapToDelhiveryPayload($payload, $invoiceLink, $warehouse);
+            $mappedRequest = $this->mapToDelhiveryPayload($payload, $invoiceLink, $warehouse, $test);
 
             // Call Delhivery API - use the test value we already determined
             $delhiveryResponse = $this->delhiveryService->createWaybill(
@@ -1117,12 +1117,13 @@ class UnicommerceApiController extends Controller
                         );
                         
                         if ($labelUrlsResponse['success'] && !empty($labelUrlsResponse['label_urls'])) {
-                            // Download and store labels
+                            // Download and store labels - pass invoice number to add to PDF
                             $shippingLabelUrl = $this->delhiveryService->downloadAndStoreLabels(
                                 $labelIdentifier,
                                 $labelUrlsResponse['label_urls'],
                                 $booking->id,
-                                $test
+                                $test,
+                                $booking->invoice_no
                             );
                             
                             if ($shippingLabelUrl) {
@@ -1231,7 +1232,7 @@ class UnicommerceApiController extends Controller
      * Note: Delhivery LTL requires a doc_file (invoice PDF) in the payload.
      * The doc_file should be a valid file path to an invoice PDF.
      */
-    private function mapToDelhiveryPayload(array $payload, string $invoiceLink, $warehouse): array
+    private function mapToDelhiveryPayload(array $payload, string $invoiceLink, $warehouse, int $test = 1): array
     {
         $pickup = $payload['pickupAddressDetails'];
         $delivery = $payload['deliveryAddressDetails'];
@@ -1340,6 +1341,9 @@ class UnicommerceApiController extends Controller
         ];
 
         // Use pickup_location_id if available (from FAAS), otherwise use pickup_location_name
+        // Determine if dev/test: test = 1 or environment is not production
+        $isDev = $test || !app()->environment('production');
+        
         $mappedPayload = [
             'lrn' => '',
             'payment_mode' => strtolower($payload['paymentMode']),
@@ -1354,6 +1358,11 @@ class UnicommerceApiController extends Controller
             'fm_pickup' => false,
             'billing_address' => $billingAddress,
         ];
+        
+        // Remove freight_mode in dev/test environments
+        if ($isDev) {
+            unset($mappedPayload['freight_mode']);
+        }
         
         // Always use pickup_location_name (warehouse name) instead of warehouse_id
         $mappedPayload['pickup_location_name'] = $warehouse->name;

@@ -1033,8 +1033,8 @@ class DelhiveryLtlService implements DeliveryServiceInterface
             
             for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
                 if ($attempt > 1) {
-                    // Use 5 seconds delay for the last retry, otherwise use regular retryDelay
-                    $delay = ($attempt == $maxRetries) ? 5 : $retryDelay;
+                    // Use 10 seconds delay for the last retry, otherwise use regular retryDelay
+                    $delay = ($attempt == $maxRetries) ? 20 : $retryDelay;
                     usleep($delay * 1000000); // Convert to microseconds
                 }
                 
@@ -1203,7 +1203,7 @@ class DelhiveryLtlService implements DeliveryServiceInterface
      * Downloads labels from URLs and saves them to storage
      * The label URLs return base64 encoded image data in JSON format
      */
-    public function downloadAndStoreLabels(string $lrNumber, array $labelUrls, string $bookingId = null, int $test = 1): ?string
+    public function downloadAndStoreLabels(string $lrNumber, array $labelUrls, string $bookingId = null, int $test = 1, string $invoiceNo = null): ?string
     {
         // Store original time limit to restore later
         $originalTimeLimit = ini_get('max_execution_time');
@@ -1385,13 +1385,13 @@ class DelhiveryLtlService implements DeliveryServiceInterface
                 // If we have PDFs, merge them first
                 $mergedPdfContent = null;
                 if (!empty($pdfLabels)) {
-                    $mergedPdfContent = $this->mergePdfLabels($pdfLabels);
+                    $mergedPdfContent = $this->mergePdfLabels($pdfLabels, $invoiceNo);
                 }
                 
                 // If we have images, create a PDF from them
                 $imagePdfContent = null;
                 if (!empty($imageLabels)) {
-                    $imagePdfContent = $this->createPdfFromImages($imageLabels);
+                    $imagePdfContent = $this->createPdfFromImages($imageLabels, $invoiceNo);
                 }
                 
                 // Combine PDF and image PDFs if both exist
@@ -1464,7 +1464,7 @@ class DelhiveryLtlService implements DeliveryServiceInterface
     /**
      * Merge multiple PDF labels into a single PDF
      */
-    private function mergePdfLabels(array $pdfLabels): string
+    private function mergePdfLabels(array $pdfLabels, string $invoiceNo = null): string
     {
         $pdf = new Fpdi();
         $isFirstPage = true;
@@ -1483,6 +1483,15 @@ class DelhiveryLtlService implements DeliveryServiceInterface
                     // Add a page (always needed, even for first page)
                     $pdf->AddPage($size['orientation'], [$size['width'], $size['height']]);
                     $pdf->useTemplate($templateId);
+                    
+                    // Add invoice number on the first page if provided
+                    if ($isFirstPage && $invoiceNo) {
+                        $pdf->SetFont('Arial', 'B', 10);
+                        $pdf->SetTextColor(0, 0, 0);
+                        // Add invoice number at bottom right corner
+                        $pdf->SetXY($size['width'] - 60, $size['height'] - 15);
+                        $pdf->Cell(0, 0, 'Inv No: ' . $invoiceNo, 0, 0, 'R');
+                    }
                     
                     $isFirstPage = false;
                 }
@@ -1529,14 +1538,15 @@ class DelhiveryLtlService implements DeliveryServiceInterface
     /**
      * Create a PDF from multiple image labels
      */
-    private function createPdfFromImages(array $imageLabels): string
+    private function createPdfFromImages(array $imageLabels, string $invoiceNo = null): string
     {
         $html = '<!DOCTYPE html><html><head><style>
             @page { margin: 0; size: auto; }
             body { margin: 0; padding: 0; }
-            .label-page { page-break-after: always; width: 100%; }
+            .label-page { page-break-after: always; width: 100%; position: relative; }
             .label-page:last-child { page-break-after: auto; }
             .label-page img { width: 100%; height: auto; display: block; }
+            .invoice-no { position: absolute; bottom: 10px; right: 10px; font-family: Arial, sans-serif; font-size: 10px; font-weight: bold; color: #000; background: rgba(255,255,255,0.8); padding: 2px 5px; }
         </style></head><body>';
         
         foreach ($imageLabels as $index => $label) {
@@ -1544,7 +1554,10 @@ class DelhiveryLtlService implements DeliveryServiceInterface
             $mimeType = 'image/' . ($label['extension'] === 'jpg' ? 'jpeg' : $label['extension']);
             
             $html .= '<div class="label-page">';
+            $html .= '<div class="invoice-no">Inv No: ' . $invoiceNo . '</div>';
             $html .= '<img src="data:' . $mimeType . ';base64,' . $base64Data . '" alt="Label ' . ($index + 1) . '">';
+            // Add invoice number on first page only
+
             $html .= '</div>';
         }
         
