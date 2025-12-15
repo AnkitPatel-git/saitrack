@@ -175,10 +175,18 @@ class couriercontroller extends Controller
             return redirect('/Admin/booking');
             }
         $datalogs = bookinglog::where('bookingno', $data->id)->get();
+        // Get all unique statuses from bookinglog table
+        $statuses = bookinglog::select('status')
+            ->distinct()
+            ->whereNotNull('status')
+            ->where('status', '!=', '')
+            ->orderBy('status', 'asc')
+            ->pluck('status')
+            ->toArray();
         if($data->status =="Delivered"){
-            return view('admin.booking.show',compact('data','datalogs'));
+            return view('admin.booking.show',compact('data','datalogs','statuses'));
         }
-        return view('admin.booking.edit',compact('data','datalogs'));
+        return view('admin.booking.edit',compact('data','datalogs','statuses'));
     }
     /**
      * Show the form for editing the specified resource.

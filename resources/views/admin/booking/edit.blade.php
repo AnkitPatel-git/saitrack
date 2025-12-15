@@ -312,22 +312,19 @@
                   </div>
                   <div class="form-group">
                     <label for="status">Status</label>
-                    <select class="custom-select rounded-0" id="status" name="status"  required>
-                    <option value="Booked">Booked</option>
-                    <option value="Shipped">Shipped</option>
-                    <option value="In-transit">In-transit</option>
-                    <option value="Out For Delivery">Out For Delivery</option>
-                    <option value="Incomplete/incorrect address">Consignee's Address Incomplete/Incorrect</option>
-                     <option value="consignee shifted ">Consignee Shifted From the given address</option> 
-                     <option value="customer refused to accept ">Customer refused to accept</option> 
-                     <option value="ndr">NDR</option>
-                    <option value="Delivered">Shipment Delivered</option>
-                    <option value="RTO">RTO</option>
+                    <select class="form-control select2" id="status" name="status" style="width: 100%;" required>
+                    @if(isset($statuses) && count($statuses) > 0)
+                        @foreach($statuses as $status)
+                            <option value="{{ $status }}" {{ $data->status == $status ? 'selected' : '' }}>{{ $status }}</option>
+                        @endforeach
+                    @else
+                        <option value="Booked" {{ $data->status == 'Booked' ? 'selected' : '' }}>Booked</option>
+                        <option value="Shipped" {{ $data->status == 'Shipped' ? 'selected' : '' }}>Shipped</option>
+                        <option value="In-transit" {{ $data->status == 'In-transit' ? 'selected' : '' }}>In-transit</option>
+                        <option value="Delivered" {{ $data->status == 'Delivered' ? 'selected' : '' }}>Delivered</option>
+                    @endif
                   </select>
                   </div>
-<script src="https://ajax.googleapis.com/ajax/libs/jquery/1.2.3/jquery.min.js"></script>
-<script type="text/javascript">
-$('#status option[value= {{$data->status}} ]').attr("selected","selected");</script>
                 </div>
                 <!-- /.card-body -->
                 <div class="card-footer">
@@ -382,4 +379,14 @@ $('#status option[value= {{$data->status}} ]').attr("selected","selected");</scr
     </section>
     <!-- /.content -->
   </div>
+  <script>
+    // Initialize Select2 for status dropdown
+    $(document).ready(function() {
+        $('#status').select2({
+            placeholder: 'Select a status',
+            allowClear: true,
+            width: '100%'
+        });
+    });
+  </script>
 @endsection

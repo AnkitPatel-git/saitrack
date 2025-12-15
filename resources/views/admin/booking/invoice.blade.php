@@ -94,7 +94,15 @@
       <table class="mytable mytable-body">
         <tr>
           <td width="30%"> Ref #:</td>  
-          <td width="40%" rowspan="3">Dimensioin:</td>  
+          <td width="40%" rowspan="3">Dimension: 
+            @if(!empty($datas->dimension) && is_array($datas->dimension) && isset($datas->dimension['l']) && isset($datas->dimension['b']) && isset($datas->dimension['h']))
+                {{ $datas->dimension['l'] }}*{{ $datas->dimension['b'] }}*{{ $datas->dimension['h'] }}
+            @elseif(!empty($datas->dims))
+                {{ $datas->dims }}
+            @else
+                N/A
+            @endif
+          </td>  
           <td width="30%">Declared Value:</td> 
         <tr>
         <tr>
