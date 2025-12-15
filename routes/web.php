@@ -7,6 +7,7 @@ use App\Http\Controllers\Admin\indexcontroller as AdminIndex;
 use App\Http\Controllers\Admin\couriercontroller;
 use App\Http\Controllers\Admin\pincodecontroller;
 use App\Http\Controllers\Admin\usercontroller;
+use App\Http\Controllers\Admin\PartnerController;
 use App\Http\Controllers\Admin\bulkreportcontroller; 
 use App\Http\Controllers\BarcodeController;
 /*
@@ -53,6 +54,7 @@ Route::middleware(['auth:sanctum', config('jetstream.auth_session'), 'verified']
         })->name('User'); 
         Route::resource('/user', usercontroller::class)->middleware('can:users');
         Route::get('/statusupdate/{id}', [usercontroller::class, 'statusupdate'])->name('user-statusupdate');
+        Route::resource('/partner', PartnerController::class)->middleware('can:users');
         Route::get('bulkreport', function () {
         return view('admin.bulkreport.index');
         })->name('bulkreport');

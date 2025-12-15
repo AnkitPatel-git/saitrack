@@ -215,7 +215,7 @@
             </a>
           </li>
           @endcan
-          @if(Auth::user()->id == 6)
+          @if(Auth::user()->id == 6 || Auth::user()->id == 1)
           @can('pancard')
           <li class="nav-item ">
                 <a href="{{route('user-pancard')}}" class="nav-link {{ (request()->is('bulkreport*')) ? 'active' : '' }}">
@@ -226,6 +226,16 @@
             </a>
           </li>
          @endcan
+          
+          <li class="nav-item ">
+             <a href="{{route('partner.index')}}" class="nav-link {{ (request()->is('Admin/partner*')) ? 'active' : '' }}">
+               <i class="nav-icon fas fa-copy"></i>
+              <p>
+                Partner Management
+              </p>
+            </a>
+          </li>
+          
          @endif
         </ul>
       </nav>
