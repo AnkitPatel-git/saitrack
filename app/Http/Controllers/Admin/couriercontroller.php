@@ -605,8 +605,9 @@ public function bulkreport(Request $request)
 {
     $datas = $this->getBookingsFromRequest($request);
     
-    if ($datas === null) {
-        return redirect()->back()->with('alert-error', 'Failed to process request. Please provide forwarding numbers or upload a valid Excel file.');
+    if ($datas === null || $datas->isEmpty()) {
+        $errorMessage = 'No bookings found. Please provide valid forwarding numbers or upload a valid Excel file with existing AWB numbers.';
+        return view('admin/booking/Bulkinvoice', compact('errorMessage'))->with('datas', collect([]));
     }
 
     return view('admin/booking/Bulkinvoice', compact('datas'));
@@ -616,8 +617,9 @@ public function bulksticker(Request $request)
 {
     $datas = $this->getBookingsFromRequest($request);
     
-    if ($datas === null) {
-        return redirect()->back()->with('alert-error', 'Failed to process request. Please provide forwarding numbers or upload a valid Excel file.');
+    if ($datas === null || $datas->isEmpty()) {
+        $errorMessage = 'No bookings found. Please provide valid forwarding numbers or upload a valid Excel file with existing AWB numbers.';
+        return view('admin/bulkreport/bulksticker', compact('errorMessage'))->with('datas', collect([]));
     }
       
     return view('admin/bulkreport/bulksticker', compact('datas'));
@@ -627,8 +629,9 @@ public function bulkreportwaree(Request $request)
 {
     $datas = $this->getBookingsFromRequest($request);
     
-    if ($datas === null) {
-        return redirect()->back()->with('alert-error', 'Failed to process request. Please provide forwarding numbers or upload a valid Excel file.');
+    if ($datas === null || $datas->isEmpty()) {
+        $errorMessage = 'No bookings found. Please provide valid forwarding numbers or upload a valid Excel file with existing AWB numbers.';
+        return view('admin/booking/wareebulkinvoice', compact('errorMessage'))->with('datas', collect([]));
     }
 
     return view('admin/booking/wareebulkinvoice', compact('datas'));

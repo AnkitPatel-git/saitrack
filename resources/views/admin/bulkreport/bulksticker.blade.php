@@ -56,6 +56,17 @@
   </style>
 </head>
 <body>
+@if(isset($errorMessage) || (isset($datas) && $datas->isEmpty()))
+  <div style="padding: 20px; text-align: center;">
+    <h2 style="color: #dc3545;">Error</h2>
+    <p style="font-size: 16px; color: #666;">
+      {{ $errorMessage ?? 'No bookings found. Please provide valid forwarding numbers or upload a valid Excel file with existing AWB numbers.' }}
+    </p>
+    <button onclick="window.close()" style="padding: 10px 20px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; margin-top: 20px;">
+      Close Window
+    </button>
+  </div>
+@else
 @php ($i = 0)
 <div class="grid-container">
   @foreach ($datas as $data)
@@ -80,7 +91,13 @@
     </td>
     <td>
         <strong>DIMS#:</strong>
-        {{ is_array($data['dimension']) ? ($data['dimension']['l'] . '*' . $data['dimension']['b'] . '*' . $data['dimension']['h']) : 'N/A' }}
+        @if(!empty($data['dimension']) && is_array($data['dimension']) && isset($data['dimension']['l']) && isset($data['dimension']['b']) && isset($data['dimension']['h']))
+            {{ $data['dimension']['l'] }}*{{ $data['dimension']['b'] }}*{{ $data['dimension']['h'] }}
+        @elseif(!empty($data['dims']))
+            {{ $data['dims'] }}
+        @else
+            N/A
+        @endif
     </td>
 </tr>
         <tr style="border-bottom: 1px solid #36454F;">
@@ -116,7 +133,9 @@
     @endfor
   @endforeach
 </div>
+@endif
 
+@if(!isset($errorMessage) && isset($datas) && !$datas->isEmpty())
 <script>
   window.onload = function() {
     setTimeout(function() {
@@ -124,5 +143,6 @@
     }, 1000);
   };
 </script>
+@endif
 </body>
 </html>
