@@ -41,7 +41,7 @@ class PartnerController extends Controller
     public function update(Request $request, $id)
     {
         $request->validate([
-            'service_provider' => 'nullable|string|max:255'
+            'service_provider' => 'required|in:sb,bluedart,delhivery'
         ]);
      
         $partner = Webhook::findOrFail($id);

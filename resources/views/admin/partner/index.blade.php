@@ -34,6 +34,7 @@
                     <th>Organization Name</th>
                     <th>Contact Email</th>
                     <th>Service Provider</th>
+                    <th>Test Account</th>
                     <th>Status</th>
                     <th>Created Date</th>
                     <th>Action</th>
@@ -47,6 +48,13 @@
                         <td>{{ $data->organization_name }}</td>
                         <td>{{ $data->contact_email }}</td>
                         <td>{{ $data->service_provider ?? 'N/A' }}</td>
+                        <td>
+                          <?php if($data->test == '1' || $data->test == 1){ ?>
+                            <span class="badge badge-warning">Test</span>
+                          <?php }else{ ?> 
+                            <span class="badge badge-info">Production</span>
+                          <?php } ?>
+                        </td>
                         <td>
                           <?php if($data->is_active == '1'){ ?>
                             <span class="badge badge-success">Active</span>
@@ -70,6 +78,7 @@
                     <th>Organization Name</th>
                     <th>Contact Email</th>
                     <th>Service Provider</th>
+                    <th>Test Account</th>
                     <th>Status</th>
                     <th>Created Date</th>
                     <th>Action</th>

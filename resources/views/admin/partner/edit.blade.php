@@ -44,8 +44,19 @@
                       <div class="col-md-6">
                         <div class="form-group">
                           <label for="service_provider">Service Provider <span class="text-danger">*</span></label>
-                          <input type="text" class="form-control" name="service_provider" id="service_provider" value="{{ $data->service_provider }}" placeholder="e.g., bluedart, delhivery">
-                          <small class="form-text text-muted">Enter the service provider name (e.g., bluedart, delhivery)</small>
+                          <select class="form-control" name="service_provider" id="service_provider" required>
+                            <option value="">Select Service Provider</option>
+                            <option value="sb" {{ $data->service_provider == 'sb' ? 'selected' : '' }}>SB</option>
+                            <option value="bluedart" {{ $data->service_provider == 'bluedart' ? 'selected' : '' }}>BlueDart</option>
+                            <option value="delhivery" {{ $data->service_provider == 'delhivery' ? 'selected' : '' }}>Delhivery</option>
+                          </select>
+                        </div>
+                      </div>
+                      <div class="col-md-6">
+                        <div class="form-group">
+                          <label for="test">Test Account</label>
+                          <input type="text" class="form-control" name="test" id="test" value="{{ ($data->test == '1' || $data->test == 1) ? 'Test' : 'Production' }}" readonly>
+                          <small class="form-text text-muted">1 = Test Account, 0 = Production Account</small>
                         </div>
                       </div>
                     </div>
