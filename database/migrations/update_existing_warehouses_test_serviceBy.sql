@@ -17,3 +17,4 @@ SELECT
     SUM(CASE WHEN `test` IS NULL OR `serviceBy` IS NULL OR `serviceBy` = '' THEN 1 ELSE 0 END) as remaining_null
 FROM `warehouses`;
 
+
