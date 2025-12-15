@@ -123,6 +123,7 @@ class couriercontroller extends Controller
         $newscanpoint->weight = $request->weight;
         $newscanpoint->vol_weight = $request->vol_weight;
         $newscanpoint->charg_weight = $request->charg_weight;
+        $newscanpoint->pices = $request->pices ?? 1;
         $newscanpoint->client_name = $request->client_name;
         $newscanpoint->pickupaddress = $request->pickupaddress;
         $newscanpoint->pickup_name = $request->pickup_name;
@@ -137,6 +138,16 @@ class couriercontroller extends Controller
         $newscanpoint->receivercontactno = $request->receivercontactno;
         $newscanpoint->status = 'Booked';
         $newscanpoint->booking_date = $request->booking_date;
+        
+        // Store dimensions (Length, Breadth, Height) in dimension array
+        if ($request->length || $request->breadth || $request->height) {
+            $newscanpoint->dimension = [
+                'l' => $request->length ? (float) $request->length : null,
+                'b' => $request->breadth ? (float) $request->breadth : null,
+                'h' => $request->height ? (float) $request->height : null,
+            ];
+        }
+        
         $newscanpoint->save();
       
         $newentry = new bookinglog;
@@ -293,17 +304,18 @@ class couriercontroller extends Controller
         session()->flash('alert-warning', 'Forwarding number already exists');
         return redirect()->back();
     }  
-    $booking->update([
+    $updateData = [
         'cust_name' => $request->cust_name,
         'forwordingno' => $request->forwordingno,
         'refrenceno' => $request->refrenceno,
         'pickuplocation' => $request->pickuplocation,
         'deliverylocation' => $request->deliverylocation,
         'product_type' => $request->product_type,
-         'content' => $request->content,
+        'content' => $request->content,
         'weight' => $request->weight,
         'vol_weight' => $request->vol_weight,
         'charg_weight' => $request->charg_weight,
+        'pices' => $request->pices ?? 1,
         'client_name' => $request->client_name,
         'pickupaddress' => $request->pickupaddress,
         'pickup_name' => $request->pickup_name,
@@ -317,7 +329,18 @@ class couriercontroller extends Controller
         'receiver_pincode' => $request->receiver_pincode,
         'receivercontactno' => $request->receivercontactno,
         'booking_date' => $request->booking_date,
-    ]);
+    ];
+    
+    // Store dimensions (Length, Breadth, Height) in dimension array
+    if ($request->length || $request->breadth || $request->height) {
+        $updateData['dimension'] = [
+            'l' => $request->length ? (float) $request->length : null,
+            'b' => $request->breadth ? (float) $request->breadth : null,
+            'h' => $request->height ? (float) $request->height : null,
+        ];
+    }
+    
+    $booking->update($updateData);
 
     session()->flash('alert-success', 'Booking updated successfully');
     return redirect('/Admin/booking');

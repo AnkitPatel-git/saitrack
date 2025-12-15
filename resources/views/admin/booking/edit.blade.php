@@ -114,16 +114,42 @@
                     <input type="text" class="form-control" name="weight"  id="weight" value="{{ $data->weight }}" >
                   </div> 
                     </div>
-                    <div class="col-md-4">
+                    <div class="col-md-3">
                       <div class="form-group">
-                    <label for="vol_weight">(L*B*H) Weight</label>
-                    <input type="text" class="form-control" name="vol_weight"  id="vol_weight" value="{{ $data->vol_weight }}" >
+                    <label for="pices">Number of Boxes/Pieces</label>
+                    <input type="number" class="form-control" name="pices"  id="pices" value="{{ $data->pices ?? 1 }}" min="1" >
                   </div> 
                     </div>
-                    <div class="col-md-5">
+                    <div class="col-md-3">
                       <div class="form-group">
                     <label for="charg_weight">Chargable Weight</label>
                     <input type="text" class="form-control" name="charg_weight"  id="charg_weight" value="{{ $data->charg_weight }}" >
+                  </div> 
+                    </div>
+                    <div class="col-md-3">
+                      <div class="form-group">
+                    <label for="vol_weight">Vol Weight (Auto) in gram</label>
+                    <input type="text" class="form-control" name="vol_weight"  id="vol_weight" value="{{ $data->vol_weight }}" readonly >
+                  </div> 
+                    </div>
+                  </div>
+                  <div class="row">
+                    <div class="col-md-4">
+                      <div class="form-group">
+                    <label for="length">Length (cm)</label>
+                    <input type="number" class="form-control" name="length"  id="length" value="{{ isset($data->dimension['l']) ? $data->dimension['l'] : '' }}" step="0.01" min="0" >
+                  </div> 
+                    </div>
+                    <div class="col-md-4">
+                      <div class="form-group">
+                    <label for="breadth">Breadth (cm)</label>
+                    <input type="number" class="form-control" name="breadth"  id="breadth" value="{{ isset($data->dimension['b']) ? $data->dimension['b'] : '' }}" step="0.01" min="0" >
+                  </div> 
+                    </div>
+                    <div class="col-md-4">
+                      <div class="form-group">
+                    <label for="height">Height (cm)</label>
+                    <input type="number" class="form-control" name="height"  id="height" value="{{ isset($data->dimension['h']) ? $data->dimension['h'] : '' }}" step="0.01" min="0" >
                   </div> 
                     </div>
                   </div>
@@ -222,6 +248,36 @@
                             div.style.display = "none";
                         }
                     }
+                    
+                    // Auto-calculate vol_weight from L*B*H in grams
+                    function calculateVolWeight() {
+                        var length = parseFloat(document.getElementById('length').value) || 0;
+                        var breadth = parseFloat(document.getElementById('breadth').value) || 0;
+                        var height = parseFloat(document.getElementById('height').value) || 0;
+                        var pices = parseFloat(document.getElementById('pices').value) || 1;
+                        
+                        if (length > 0 && breadth > 0 && height > 0) {
+                            // Volumetric weight formula: (L × B × H × pieces) / 5000 (in kg), then convert to grams
+                            var volWeightKg = (length * breadth * height * pices) / 5000;
+                            var volWeightGram = volWeightKg * 1000; // Convert to grams
+                            document.getElementById('vol_weight').value = volWeightGram.toFixed(2);
+                        } else {
+                            document.getElementById('vol_weight').value = '';
+                        }
+                    }
+                    
+                    // Add event listeners for auto-calculation
+                    document.addEventListener('DOMContentLoaded', function() {
+                        var lengthInput = document.getElementById('length');
+                        var breadthInput = document.getElementById('breadth');
+                        var heightInput = document.getElementById('height');
+                        var picesInput = document.getElementById('pices');
+                        
+                        if (lengthInput) lengthInput.addEventListener('input', calculateVolWeight);
+                        if (breadthInput) breadthInput.addEventListener('input', calculateVolWeight);
+                        if (heightInput) heightInput.addEventListener('input', calculateVolWeight);
+                        if (picesInput) picesInput.addEventListener('input', calculateVolWeight);
+                    });
                 </script>
             </div>
             <!-- /.card -->
