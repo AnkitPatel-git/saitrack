@@ -7,6 +7,7 @@ use App\Models\booking;
 use App\Models\bookinglog;
 use App\Models\ApiRequestLog;
 use App\Models\Warehouse;
+use App\Models\CancellationRequest;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Validator;
@@ -1775,6 +1776,287 @@ public function bluedart(Request $request): JsonResponse
         }
     }
 
+    /**
+     * Request cancellation of a running order by waybill number
+     * 
+     * @param Request $request
+     * @return JsonResponse
+     */
+    public function requestCancellation(Request $request): JsonResponse
+    {
+        $startTime = microtime(true);
+        
+        // Authenticate the request using token
+        $authError = $this->authenticateRequest($request);
+        if ($authError) {
+            $executionTime = microtime(true) - $startTime;
+            $this->logApiRequest($request, $authError, 'cancel_request', $executionTime);
+            return $authError;
+        }
 
+        // Validate request payload
+        $validator = Validator::make($request->all(), [
+            'waybill' => 'required|string'
+        ]);
+
+        if ($validator->fails()) {
+            $response = response()->json([
+                'status' => 'VALIDATION_ERROR',
+                'message' => 'Invalid request data',
+                'errors' => $validator->errors()
+            ], 400);
+            
+            $executionTime = microtime(true) - $startTime;
+            $this->logApiRequest($request, $response, 'cancel_request', $executionTime);
+            return $response;
+        }
+
+        try {
+            $waybill = $request->input('waybill');
+            $clientId = $request->attributes->get('clientid');
+
+            // Find booking by waybill
+            $booking = booking::where('waybills', $waybill)
+                ->orWhere('forwordingno', $waybill)
+                ->orWhere('lr_number', $waybill)
+                ->first();
+
+            if (!$booking) {
+                $response = response()->json([
+                    'status' => 'FAILED',
+                    'waybill' => $waybill,
+                    'message' => 'Waybill not found'
+                ], 404);
+                
+                $executionTime = microtime(true) - $startTime;
+                $this->logApiRequest($request, $response, 'cancel_request', $executionTime, $waybill);
+                return $response;
+            }
+
+            // Check if order is already cancelled
+            if ($booking->status === 'CANCELLED') {
+                $response = response()->json([
+                    'status' => 'FAILED',
+                    'waybill' => $waybill,
+                    'message' => 'Order is already cancelled'
+                ], 400);
+                
+                $executionTime = microtime(true) - $startTime;
+                $this->logApiRequest($request, $response, 'cancel_request', $executionTime, $waybill);
+                return $response;
+            }
+
+            // Check if there's already a pending cancellation request
+            $existingRequest = CancellationRequest::where('waybill', $waybill)
+                ->whereIn('status', [
+                    CancellationRequest::STATUS_REQUESTED,
+                    CancellationRequest::STATUS_PROCESSING
+                ])
+                ->first();
+
+            if ($existingRequest) {
+                $response = response()->json([
+                    'status' => 'FAILED',
+                    'waybill' => $waybill,
+                    'message' => 'Cancellation request already exists',
+                    'request_id' => $existingRequest->id,
+                    'current_status' => $existingRequest->status
+                ], 400);
+                
+                $executionTime = microtime(true) - $startTime;
+                $this->logApiRequest($request, $response, 'cancel_request', $executionTime, $waybill);
+                return $response;
+            }
+
+            // Determine service provider
+            $provider = null;
+            if (!empty($booking->lr_number)) {
+                $provider = 'Delhivery';
+            } else {
+                $provider = 'BlueDart';
+            }
+
+            // Create cancellation request
+            $cancellationRequest = CancellationRequest::create([
+                'waybill' => $waybill,
+                'booking_id' => $booking->id,
+                'status' => CancellationRequest::STATUS_REQUESTED,
+                'client_id' => $clientId,
+                'provider' => $provider,
+                'remarks' => $request->input('remarks', 'Cancellation requested via API')
+            ]);
+
+            $response = response()->json([
+                'status' => 'SUCCESS',
+                'message' => 'Cancellation request created successfully',
+                'request_id' => $cancellationRequest->id,
+                'waybill' => $waybill,
+                'cancellation_status' => $cancellationRequest->status,
+                'created_at' => $cancellationRequest->created_at->toIso8601String()
+            ], 200);
+
+            $executionTime = microtime(true) - $startTime;
+            $this->logApiRequest($request, $response, 'cancel_request', $executionTime, $waybill);
+            
+            return $response;
+
+        } catch (\Exception $e) {
+            $response = response()->json([
+                'status' => 'FAILED',
+                'waybill' => $request->input('waybill'),
+                'message' => 'Failed to create cancellation request: ' . $e->getMessage()
+            ], 500);
+            
+            $executionTime = microtime(true) - $startTime;
+            $this->logApiRequest($request, $response, 'cancel_request', $executionTime, $request->input('waybill'));
+            
+            return $response;
+        }
+    }
+
+    /**
+     * Get cancellation request status by waybill number
+     * 
+     * @param Request $request
+     * @return JsonResponse
+     */
+    public function getCancellationStatus(Request $request): JsonResponse
+    {
+        $startTime = microtime(true);
+        
+        // Authenticate the request using token
+        $authError = $this->authenticateRequest($request);
+        if ($authError) {
+            $executionTime = microtime(true) - $startTime;
+            $this->logApiRequest($request, $authError, 'cancel_status', $executionTime);
+            return $authError;
+        }
+
+        // Validate request payload
+        $validator = Validator::make($request->all(), [
+            'waybill' => 'required|string'
+        ]);
+
+        if ($validator->fails()) {
+            $response = response()->json([
+                'status' => 'VALIDATION_ERROR',
+                'message' => 'Invalid request data',
+                'errors' => $validator->errors()
+            ], 400);
+            
+            $executionTime = microtime(true) - $startTime;
+            $this->logApiRequest($request, $response, 'cancel_status', $executionTime);
+            return $response;
+        }
+
+        try {
+            $waybill = $request->input('waybill');
+
+            // Find cancellation request by waybill
+            $cancellationRequest = CancellationRequest::where('waybill', $waybill)
+                ->orderBy('created_at', 'desc')
+                ->first();
+
+            if (!$cancellationRequest) {
+                $response = response()->json([
+                    'status' => 'NOT_FOUND',
+                    'waybill' => $waybill,
+                    'message' => 'No cancellation request found for this waybill',
+                    'cancellation_status' => null
+                ], 404);
+                
+                $executionTime = microtime(true) - $startTime;
+                $this->logApiRequest($request, $response, 'cancel_status', $executionTime, $waybill);
+                return $response;
+            }
+
+            // Get booking details
+            $booking = $cancellationRequest->booking;
+
+            // Build booking details in the same format as waybillDetails
+            $waybillDetails = null;
+            if ($booking) {
+                $waybillDetails = [
+                    "waybill" => $waybill,
+                    "currentStatus" => strtolower($booking->status ?? ""),
+                    "current_sub_status" => "",
+                    "current_status_remark" => "",
+                    "statusDate" => $booking->updated_at ? $booking->updated_at->format('d-M-Y H:i:s') : "",
+                    "shipping_provider" => $booking->modeoftrans ?? "",
+                    "current_location" => $booking->receivercity ?? "",
+                    "current_pincode" => $booking->receiver_pincode ?? "",
+                    "current_city" => $booking->receivercity ?? "",
+                    "current_state" => $booking->receiverstate ?? "",
+                    "current_country" => "India",
+                    "latitude" => "",
+                    "longitude" => "",
+                    "expected_date_of_delivery" => $booking->expecteddeliverydate ?? "",
+                    "promised_date_of_delivery" => "",
+                    "payment_type" => $booking->service_type ?? "",
+                    "weight" => $booking->weight ?? "",
+                    "dimensions" => [
+                        "l" => $booking->dimension['l'] ?? "",
+                        "b" => $booking->dimension['b'] ?? "",
+                        "h" => $booking->dimension['h'] ?? ""
+                    ],
+                    "delivery_agent_name" => "",
+                    "delivery_agent_number" => "",
+                    "attempt_count" => $booking->attempt_count ?? "",
+                    "ndr_code" => "",
+                    "ndr_reason" => "",
+                    "next_delivery_date" => "",
+                    "cir_pickup_datetime" => "",
+                    "tracking_history" => $booking->bookingLogs
+                        ->sortByDesc('created_at')
+                        ->map(function($log) {
+                            return [
+                                "date_time" => $log->created_at->format('d-M-Y H:i:s'),
+                                "status" => strtolower($log->status ?? ""),
+                                "sub_status" => strtolower($log->currentstatus ?? ""),
+                                "remark" => $log->remark ?? "",
+                                "location" => strtolower($log->currentstatus ?? ""),
+                                "pincode" => "",
+                                "city" => "",
+                                "state" => "",
+                                "country" => "India"
+                            ];
+                        })->values(),
+                    "parent_awb" => "",
+                    "rto_awb" => "",
+                    "rto_reason" => ""
+                ];
+            }
+
+            $response = response()->json([
+                'status' => 'SUCCESS',
+                'waybill' => $waybill,
+                'request_id' => $cancellationRequest->id,
+                'cancellation_status' => $cancellationRequest->status,
+                'provider' => $cancellationRequest->provider,
+                'remarks' => $cancellationRequest->remarks,
+                'error_message' => $cancellationRequest->error_message,
+                'created_at' => $cancellationRequest->created_at->toIso8601String(),
+                'updated_at' => $cancellationRequest->updated_at->toIso8601String(),
+                'waybillDetails' => $waybillDetails
+            ], 200);
+
+            $executionTime = microtime(true) - $startTime;
+            $this->logApiRequest($request, $response, 'cancel_status', $executionTime, $waybill);
+            
+            return $response;
+
+        } catch (\Exception $e) {
+            $response = response()->json([
+                'status' => 'FAILED',
+                'waybill' => $request->input('waybill'),
+                'message' => 'Failed to fetch cancellation status: ' . $e->getMessage()
+            ], 500);
+            
+            $executionTime = microtime(true) - $startTime;
+            $this->logApiRequest($request, $response, 'cancel_status', $executionTime, $request->input('waybill'));
+            
+            return $response;
+        }
+    }
 
 }

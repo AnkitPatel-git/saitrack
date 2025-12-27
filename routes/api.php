@@ -49,3 +49,5 @@ Route::middleware('auth:sanctum')->group(function () {
      Route::get('/unicommerce/waybillDetails', [unicommerceapicontroller::class, 'waybillDetails']);
      Route::get('/unicommerce/test-logging', [unicommerceapicontroller::class, 'testBlueDartLogging']);
      Route::get('/unicommerce/test-sticker/{waybill}', [unicommerceapicontroller::class, 'testShippingLabel']);
+     Route::post('/unicommerce/cancelRequest', [unicommerceapicontroller::class, 'requestCancellation']);
+     Route::get('/unicommerce/cancelStatus', [unicommerceapicontroller::class, 'getCancellationStatus']);
