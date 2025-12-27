@@ -771,12 +771,15 @@ class UnicommerceApiController extends Controller
                 $response = response()->json([
                     'status' => 'FAILED',
                     'reason' => 'PINCODE_NOT_SERVICEABLE',
-                    'message' => 'Delivery pincode ' . $deliveryPincode . ' is not serviceable by Delhivery for weight ' . $weightInKg . ' kg',
+                    'message' => 'Delivery pincode ' . $deliveryPincode . ' is not serviceable by Delhivery for weight ' . number_format($weightInKg, 3, '.', '') . ' kg',
                     'details' => [
                         'pincode_type' => 'delivery',
                         'pincode' => $deliveryPincode,
-                        'weight_kg' => $weightInKg,
-                        'serviceability_data' => $deliveryServiceabilityCheck['serviceability_data'] ?? []
+                        'weight_kg' => number_format($weightInKg, 3, '.', ''),
+                        'serviceability_data' => $deliveryServiceabilityCheck['serviceability_data'] ?? [],
+                        'api_response' => $deliveryServiceabilityCheck['data'] ?? null,
+                        'cached' => $deliveryServiceabilityCheck['cached'] ?? false,
+                        'check_success' => $deliveryServiceabilityCheck['success'] ?? false
                     ]
                 ], 400);
 
@@ -992,6 +995,17 @@ class UnicommerceApiController extends Controller
                     $delhiveryWaybill = $statusResult['lr_number'] ?? 
                                       (isset($statusResult['awb_numbers']) && !empty($statusResult['awb_numbers']) 
                                        ? $statusResult['awb_numbers'][0] : null);
+                    
+                    // Update delhiveryResponse with statusResult data if not already present
+                    if (!isset($delhiveryResponse['lr_number']) && isset($statusResult['lr_number'])) {
+                        $delhiveryResponse['lr_number'] = $statusResult['lr_number'];
+                    }
+                    if (!isset($delhiveryResponse['master_waybill']) && isset($statusResult['master_waybill'])) {
+                        $delhiveryResponse['master_waybill'] = $statusResult['master_waybill'];
+                    }
+                    if (!isset($delhiveryResponse['awb_numbers']) && isset($statusResult['awb_numbers'])) {
+                        $delhiveryResponse['awb_numbers'] = $statusResult['awb_numbers'];
+                    }
                 } else {
                     // Return job_id so client can poll later
                     $response = response()->json([
@@ -1011,9 +1025,14 @@ class UnicommerceApiController extends Controller
                 }
             }
             
-            // Extract LR number and AWB numbers from response
+            // Extract LR number, AWB numbers, and MAWB from response
             $lrNumber = $delhiveryResponse['lr_number'] ?? null;
             $awbNumbers = $delhiveryResponse['awb_numbers'] ?? [];
+            $masterWaybill = $delhiveryResponse['master_waybill'] ?? null;
+            
+            // Use MAWB if available, otherwise fallback to LR number or waybill
+            // Store MAWB in waybills and forwordingno fields
+            $waybillToStore = $masterWaybill ?? $delhiveryWaybill;
             
             // Use LR number as primary identifier for labels (more reliable than waybill)
             $labelIdentifier = $lrNumber ?? $delhiveryWaybill;
@@ -1025,11 +1044,11 @@ class UnicommerceApiController extends Controller
             \DB::beginTransaction();
             try {
                 $booking = booking::create([
-                'waybills' => $delhiveryWaybill,
+                'waybills' => $waybillToStore, // Store MAWB in waybills field
                 'lr_number' => $lrNumber, // Store LR number for Delhivery shipments
                 'cust_name' => 'Waree',
                 'clientid' => $request->attributes->get('clientid'),
-                'forwordingno' => $delhiveryWaybill,
+                'forwordingno' => $waybillToStore, // Store MAWB in forwordingno field
                 'status' => 'Booked',
                 'content' => $contentString,
                 'service_type' => $payload['serviceType'],
@@ -1061,7 +1080,7 @@ class UnicommerceApiController extends Controller
                 'booking_date' => now(),
                 'invoice_no' => $invoiceLink,
                 'pices' => isset($payload['Shipment']['numberOfBoxes']) ? (int) $payload['Shipment']['numberOfBoxes'] : 1,
-                'refrenceno' => $delhiveryWaybill,
+                'refrenceno' => $waybillToStore, // Store MAWB in refrenceno as well
                 'value' => $payload['collectableAmount'],
             ]);
 
@@ -1152,10 +1171,10 @@ class UnicommerceApiController extends Controller
                 }
             }
 
-            // ✅ Success response
+            // ✅ Success response - Return MAWB instead of LR number
             $response = response()->json([
                 'status' => 'SUCCESS',
-                'waybill' => $delhiveryWaybill,
+                'waybill' => $waybillToStore, // Return MAWB (stored in waybills/forwordingno)
                 'courierName' => 'Delhivery',
                 'shippingLabel' => $shippingLabelUrl
             ], 200);
@@ -1360,9 +1379,7 @@ class UnicommerceApiController extends Controller
         ];
         
         // Remove freight_mode in dev/test environments
-        if ($isDev) {
-            unset($mappedPayload['freight_mode']);
-        }
+        
         
         // Always use pickup_location_name (warehouse name) instead of warehouse_id
         $mappedPayload['pickup_location_name'] = $warehouse->name;
@@ -1466,8 +1483,10 @@ class UnicommerceApiController extends Controller
             // Get test value (0 = production, 1 = test) - ensure it's an integer
             $test = (int) $request->attributes->get('test', 1);
 
-            // Find booking by waybill or LR number
+            // Find booking by waybill, forwordingno (both contain MAWB for Delhivery), or LR number
+            // For Delhivery: API will receive MAWB (stored in waybills/forwordingno), but cancellation requires LR number
             $booking = booking::where('waybills', $waybill)
+                ->orWhere('forwordingno', $waybill)
                 ->orWhere('lr_number', $waybill)
                 ->first();
 
@@ -1502,7 +1521,7 @@ class UnicommerceApiController extends Controller
             $cancelIdentifier = $waybill;
             
             if (!empty($booking->lr_number)) {
-                // Delhivery shipment - use LR number for cancellation
+                // Delhivery shipment - use LR number for cancellation (API requires LR, not MAWB)
                 $serviceProvider = $this->delhiveryService;
                 $cancelIdentifier = $booking->lr_number;
             } else {

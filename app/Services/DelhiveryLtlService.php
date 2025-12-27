@@ -1033,9 +1033,8 @@ class DelhiveryLtlService implements DeliveryServiceInterface
             
             for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
                 if ($attempt > 1) {
-                    // Use 10 seconds delay for the last retry, otherwise use regular retryDelay
-                    $delay = ($attempt == $maxRetries) ? 20 : $retryDelay;
-                    usleep($delay * 1000000); // Convert to microseconds
+                    // Use 20 seconds delay for each retry
+                    usleep(20 * 1000000); // 20 seconds delay for each retry
                 }
                 
                 $statusResult = $this->getManifestStatus($jobId, $test);
@@ -1079,6 +1078,7 @@ class DelhiveryLtlService implements DeliveryServiceInterface
             'job_id' => $jobId, // Include job_id for async API
             'lr_number' => $result['lr_number'] ?? null,
             'awb_numbers' => $result['awb_numbers'] ?? [],
+            'master_waybill' => $result['master_waybill'] ?? null,
             'message' => $result['message'],
             'data' => $result['data'] ?? []
         ];
