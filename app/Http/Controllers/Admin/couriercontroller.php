@@ -107,11 +107,32 @@ class couriercontroller extends Controller
      */
     public function store(Request $request)
     {
+        // Validate booking_date - it must be provided and not null
+        $request->validate([
+            'booking_date' => 'required|date',
+        ], [
+            'booking_date.required' => 'Booking date is required.',
+            'booking_date.date' => 'Booking date must be a valid date.',
+        ]);
+        
         $datas = booking::where('forwordingno', $request->forwordingno)->exists();
         if ($datas) {
             session()->flash('alert-warning', 'Forwarding number already exists');
             return redirect('/Admin/booking');
         }
+        
+        // Convert datetime-local format (Y-m-d\TH:i) to database format (Y-m-d H:i:s)
+        $bookingDate = $request->booking_date;
+        if ($bookingDate) {
+            // If it's in datetime-local format (contains 'T'), convert it
+            if (strpos($bookingDate, 'T') !== false) {
+                $bookingDate = Carbon::createFromFormat('Y-m-d\TH:i', $bookingDate)->format('Y-m-d H:i:s');
+            } else {
+                // If already in correct format, ensure it has seconds
+                $bookingDate = Carbon::parse($bookingDate)->format('Y-m-d H:i:s');
+            }
+        }
+        
         $newscanpoint = new booking;
         $newscanpoint->cust_name = $request->cust_name;
         $newscanpoint->forwordingno = $request->forwordingno;
@@ -137,7 +158,7 @@ class couriercontroller extends Controller
         $newscanpoint->receiver_pincode = $request->receiver_pincode;
         $newscanpoint->receivercontactno = $request->receivercontactno;
         $newscanpoint->status = 'Booked';
-        $newscanpoint->booking_date = $request->booking_date;
+        $newscanpoint->booking_date = $bookingDate;
         
         // Store dimensions (Length, Breadth, Height) in dimension array
         if ($request->length || $request->breadth || $request->height) {
@@ -311,7 +332,28 @@ class couriercontroller extends Controller
     if ($existingBooking) {
         session()->flash('alert-warning', 'Forwarding number already exists');
         return redirect()->back();
-    }  
+    }
+    
+    // Validate booking_date - it must be provided and not null
+    $request->validate([
+        'booking_date' => 'required|date',
+    ], [
+        'booking_date.required' => 'Booking date is required.',
+        'booking_date.date' => 'Booking date must be a valid date.',
+    ]);
+    
+    // Convert datetime-local format (Y-m-d\TH:i) to database format (Y-m-d H:i:s)
+    $bookingDate = $request->booking_date;
+    if ($bookingDate) {
+        // If it's in datetime-local format (contains 'T'), convert it
+        if (strpos($bookingDate, 'T') !== false) {
+            $bookingDate = Carbon::createFromFormat('Y-m-d\TH:i', $bookingDate)->format('Y-m-d H:i:s');
+        } else {
+            // If already in correct format, ensure it has seconds
+            $bookingDate = Carbon::parse($bookingDate)->format('Y-m-d H:i:s');
+        }
+    }
+    
     $updateData = [
         'cust_name' => $request->cust_name,
         'forwordingno' => $request->forwordingno,
@@ -336,7 +378,7 @@ class couriercontroller extends Controller
         'receivercity' => $request->receivercity,
         'receiver_pincode' => $request->receiver_pincode,
         'receivercontactno' => $request->receivercontactno,
-        'booking_date' => $request->booking_date,
+        'booking_date' => $bookingDate,
     ];
     
     // Store dimensions (Length, Breadth, Height) in dimension array

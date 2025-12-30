@@ -49,8 +49,8 @@
                   </div>
                   <div class="col-md-6">
                     <div class="form-group">
-                    <label for="booking_date">Booking Date&Time</label>
-                    <input type="datetime-local" class="form-control" name="booking_date"  id="booking_date" >
+                    <label for="booking_date">Booking Date&Time <span class="text-danger">*</span></label>
+                    <input type="datetime-local" class="form-control" name="booking_date"  id="booking_date" required value="{{ $data->booking_date ? \Carbon\Carbon::parse($data->booking_date)->format('Y-m-d\TH:i') : '' }}">
                   </div>
                   </div>
                     </div>
