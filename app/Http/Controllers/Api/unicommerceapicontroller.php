@@ -2023,7 +2023,8 @@ public function bluedart(Request $request): JsonResponse
                         })->values(),
                     "parent_awb" => "",
                     "rto_awb" => "",
-                    "rto_reason" => ""
+                    "rto_reason" => "",
+                    "epod" => $booking->pod
                 ];
             }
 
@@ -2054,6 +2055,121 @@ public function bluedart(Request $request): JsonResponse
             
             $executionTime = microtime(true) - $startTime;
             $this->logApiRequest($request, $response, 'cancel_status', $executionTime, $request->input('waybill'));
+            
+            return $response;
+        }
+    }
+
+    /**
+     * Get POD (Proof of Delivery) for a waybill
+     * 
+     * @param Request $request
+     * @return JsonResponse
+     */
+    public function getPod(Request $request): JsonResponse
+    {
+        $startTime = microtime(true);
+        
+        // Authenticate the request using token
+        $authError = $this->authenticateRequest($request);
+        if ($authError) {
+            $executionTime = microtime(true) - $startTime;
+            $this->logApiRequest($request, $authError, 'pod_get', $executionTime);
+            return $authError;
+        }
+
+        // Validate request payload
+        $validator = Validator::make($request->all(), [
+            'waybill' => 'required|string'
+        ]);
+
+        if ($validator->fails()) {
+            $response = response()->json([
+                'status' => 'VALIDATION_ERROR',
+                'message' => 'Invalid request data',
+                'errors' => $validator->errors()
+            ], 400);
+            
+            $executionTime = microtime(true) - $startTime;
+            $this->logApiRequest($request, $response, 'pod_get', $executionTime);
+            return $response;
+        }
+
+        try {
+            $waybill = $request->input('waybill');
+
+            // Find booking by waybill, forwordingno, or lr_number
+            $booking = booking::where('waybills', $waybill)
+                ->orWhere('forwordingno', $waybill)
+                ->orWhere('lr_number', $waybill)
+                ->first();
+
+            if (!$booking) {
+                $response = response()->json([
+                    'status' => 'FAILED',
+                    'waybill' => $waybill,
+                    'message' => 'Waybill not found'
+                ], 404);
+                
+                $executionTime = microtime(true) - $startTime;
+                $this->logApiRequest($request, $response, 'pod_get', $executionTime, $waybill);
+                return $response;
+            }
+
+            // Check if booking is delivered
+            if (strtolower($booking->status) !== 'delivered') {
+                $response = response()->json([
+                    'status' => 'FAILED',
+                    'waybill' => $waybill,
+                    'message' => 'Booking is not delivered yet. Current status: ' . $booking->status,
+                    'current_status' => strtolower($booking->status)
+                ], 400);
+                
+                $executionTime = microtime(true) - $startTime;
+                $this->logApiRequest($request, $response, 'pod_get', $executionTime, $waybill);
+                return $response;
+            }
+
+            // Check if POD exists
+            if (empty($booking->pod)) {
+                $response = response()->json([
+                    'status' => 'FAILED',
+                    'waybill' => $waybill,
+                    'message' => 'POD not available for this waybill'
+                ], 404);
+                
+                $executionTime = microtime(true) - $startTime;
+                $this->logApiRequest($request, $response, 'pod_get', $executionTime, $waybill);
+                return $response;
+            }
+
+            // Build POD URL
+            $baseUrl = 'https://track.sbexpresscargo.com/storage/';
+            $podPath = ltrim($booking->pod, '/'); // avoid double slashes
+            $podUrl = $baseUrl . $podPath;
+
+            $response = response()->json([
+                'status' => 'SUCCESS',
+                'waybill' => $waybill,
+                'message' => 'POD retrieved successfully',
+                'pod_url' => $podUrl,
+                'delivery_status' => strtolower($booking->status)
+            ], 200);
+
+            $executionTime = microtime(true) - $startTime;
+            $this->logApiRequest($request, $response, 'pod_get', $executionTime, $waybill);
+            
+            return $response;
+
+        } catch (\Exception $e) {
+            $response = response()->json([
+                'status' => 'FAILED',
+                'waybill' => $request->input('waybill'),
+                'message' => 'Failed to fetch POD: ' . $e->getMessage()
+            ], 500);
+            
+            $executionTime = microtime(true) - $startTime;
+            $this->logApiRequest($request, $response, 'pod_get', $executionTime, $request->input('waybill'));
             
             return $response;
         }

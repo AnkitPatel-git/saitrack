@@ -1,0 +1,849 @@
+// ============================================
+// LOGISTICS MANAGEMENT SYSTEM DATABASE SCHEMA
+// ============================================
+// 
+// Designed for a comprehensive logistics company handling parcels for small organizations
+// Supports both self-shipping and shipping partner integrations (BlueDart, Delhivery, DTDC, etc.)
+//
+// KEY FEATURES:
+// - Complete shipment lifecycle management (booking to delivery)
+// - Multi-partner shipping support with credential management
+// - Comprehensive audit trail with column-level change tracking
+// - Project management concepts (status tracking, assignment, workflow)
+// - Billing & invoicing with payment tracking
+// - NDR (Non-Delivery Reports) management
+// - Claims & disputes handling
+// - Webhook system for real-time notifications
+// - Pincode serviceability caching
+// - Consolidated logging (API logs, audit logs, status history)
+// - Address normalization and management
+// - Warehouse/facility management
+// - Pricing rules engine
+//
+// AUDIT TRAIL:
+// - audit_logs table tracks column-level changes across all tables
+// - Every change records: table_name, record_id, column_name, old_value, new_value, changed_by, changed_at
+// - Additional context stored in JSON for complex changes
+//
+// LOGGING STRATEGY:
+// - api_integration_logs: All API calls to shipping partners
+// - shipment_status_history: Status changes with user tracking
+// - shipment_tracking_events: Real-time tracking events from partners
+// - audit_logs: Column-level change tracking
+// - webhook_deliveries: Webhook delivery attempts
+//
+// ============================================
+
+// ============================================
+// CORE ENTITIES
+// ============================================
+
+Table organizations {
+  id bigint [pk, increment]
+  organization_name varchar(255) [not null]
+  organization_code varchar(50) [unique, not null]
+  contact_email varchar(255)
+  contact_phone varchar(20)
+  billing_email varchar(255)
+  gstin varchar(15)
+  pan varchar(10)
+  address_line1 varchar(500)
+  address_line2 varchar(500)
+  city varchar(100)
+  state varchar(100)
+  pincode varchar(10)
+  country varchar(50) [default: 'India']
+  is_active boolean [default: true]
+  is_test_mode boolean [default: true]
+  api_key varchar(255) [unique]
+  api_secret varchar(255)
+  webhook_url varchar(500)
+  credit_limit decimal(12, 2) [default: 0]
+  current_balance decimal(12, 2) [default: 0]
+  payment_terms varchar(50) [default: 'prepaid'] // prepaid, postpaid, credit
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  updated_at timestamp [default: `CURRENT_TIMESTAMP`]
+  created_by bigint
+  updated_by bigint
+  
+  indexes {
+    organization_code
+    api_key
+    is_active
+    (organization_name, is_active)
+  }
+}
+
+Table users {
+  id bigint [pk, increment]
+  name varchar(255) [not null]
+  email varchar(255) [unique, not null]
+  mobile varchar(20)
+  password varchar(255) [not null]
+  email_verified_at timestamp
+  remember_token varchar(100)
+  two_factor_secret text
+  two_factor_recovery_codes text
+  two_factor_confirmed_at timestamp
+  profile_photo_path varchar(2048)
+  status varchar(20) [default: 'active'] // active, inactive, suspended
+  user_type varchar(20) [default: 'internal'] // internal, client, admin
+  organization_id bigint [ref: > organizations.id, note: 'null for internal users']
+  current_team_id bigint
+  last_login_at timestamp
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  updated_at timestamp [default: `CURRENT_TIMESTAMP`]
+  
+  indexes {
+    email
+    organization_id
+    status
+    user_type
+  }
+}
+
+Table addresses {
+  id bigint [pk, increment]
+  address_type varchar(20) [not null] // pickup, delivery, return, warehouse
+  organization_id bigint [ref: > organizations.id]
+  contact_name varchar(255) [not null]
+  contact_phone varchar(20) [not null]
+  contact_email varchar(255)
+  address_line1 varchar(500) [not null]
+  address_line2 varchar(500)
+  landmark varchar(255)
+  city varchar(100) [not null]
+  state varchar(100) [not null]
+  district varchar(100)
+  pincode varchar(10) [not null]
+  country varchar(50) [default: 'India']
+  latitude decimal(10, 8)
+  longitude decimal(11, 8)
+  is_default boolean [default: false]
+  is_active boolean [default: true]
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  updated_at timestamp [default: `CURRENT_TIMESTAMP`]
+  
+  indexes {
+    organization_id
+    pincode
+    (address_type, organization_id)
+    (city, state, pincode)
+  }
+}
+
+Table warehouses {
+  id bigint [pk, increment]
+  warehouse_code varchar(50) [unique, not null]
+  name varchar(255) [not null]
+  warehouse_type varchar(20) [default: 'fulfillment'] // fulfillment, hub, sorting, delivery
+  address_id bigint [ref: > addresses.id]
+  pincode varchar(10) [not null]
+  city varchar(100) [not null]
+  state varchar(100) [not null]
+  country varchar(50) [default: 'India']
+  contact_person varchar(255)
+  contact_phone varchar(20)
+  contact_email varchar(255)
+  business_hours json
+  pick_up_hours json
+  pick_up_days json
+  business_days json
+  is_active boolean [default: true]
+  is_test_mode boolean [default: true]
+  service_provider varchar(50) [default: 'self'] // self, delhivery, bluedart, dtdc, etc.
+  external_warehouse_id varchar(255) [note: 'ID from partner API']
+  capacity_kg decimal(10, 2)
+  current_stock_kg decimal(10, 2) [default: 0]
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  updated_at timestamp [default: `CURRENT_TIMESTAMP`]
+  
+  indexes {
+    warehouse_code
+    pincode
+    service_provider
+    (is_active, service_provider)
+  }
+}
+
+Table shipping_partners {
+  id bigint [pk, increment]
+  partner_code varchar(50) [unique, not null] // delhivery, bluedart, dtdc, fedex, etc.
+  partner_name varchar(255) [not null]
+  partner_type varchar(20) [default: 'express'] // express, surface, air, ltl
+  is_active boolean [default: true]
+  api_base_url varchar(500)
+  supports_waybill boolean [default: true]
+  supports_tracking boolean [default: true]
+  supports_cancellation boolean [default: true]
+  supports_ltl boolean [default: false]
+  max_weight_kg decimal(10, 2)
+  min_weight_kg decimal(10, 2) [default: 0.5]
+  service_coverage json [note: 'States/cities covered']
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  updated_at timestamp [default: `CURRENT_TIMESTAMP`]
+  
+  indexes {
+    partner_code
+    is_active
+  }
+}
+
+Table partner_credentials {
+  id bigint [pk, increment]
+  shipping_partner_id bigint [ref: > shipping_partners.id, not null]
+  warehouse_id bigint [ref: > warehouses.id, note: 'null for global credentials']
+  environment varchar(20) [default: 'test'] // test, production
+  login_id varchar(255)
+  api_key varchar(255)
+  api_secret varchar(255)
+  client_id varchar(255)
+  client_secret varchar(255)
+  licence_key varchar(255)
+  token varchar(500) [note: 'JWT or access token']
+  token_expires_at timestamp
+  additional_credentials json [note: 'Provider-specific fields']
+  is_active boolean [default: true]
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  updated_at timestamp [default: `CURRENT_TIMESTAMP`]
+  
+  indexes {
+    (shipping_partner_id, warehouse_id, environment)
+    is_active
+  }
+}
+
+Table pincodes {
+  id bigint [pk, increment]
+  pincode varchar(10) [unique, not null]
+  area varchar(255)
+  city varchar(100)
+  district varchar(100)
+  state varchar(100) [not null]
+  country varchar(50) [default: 'India']
+  is_active boolean [default: true]
+  air_service boolean [default: false]
+  surface_service boolean [default: false]
+  cod_service boolean [default: false]
+  reverse_pickup boolean [default: false]
+  tat_air_days int
+  tat_surface_days int
+  tat_cod_days int
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  updated_at timestamp [default: `CURRENT_TIMESTAMP`]
+  
+  indexes {
+    pincode
+    state
+    city
+    (state, city)
+  }
+}
+
+Table pincode_serviceability {
+  id bigint [pk, increment]
+  pincode varchar(10) [not null]
+  shipping_partner_id bigint [ref: > shipping_partners.id, not null]
+  weight_kg decimal(10, 2) [not null]
+  is_serviceable boolean [default: false]
+  service_type varchar(20) [note: 'express, surface, cod, etc.']
+  estimated_days int
+  charges decimal(10, 2)
+  serviceability_data json
+  is_test_mode boolean [default: true]
+  cached_at timestamp [default: `CURRENT_TIMESTAMP`]
+  expires_at timestamp
+  
+  indexes {
+    (pincode, shipping_partner_id, weight_kg, is_test_mode) [unique]
+    pincode
+    shipping_partner_id
+    cached_at
+  }
+}
+
+// ============================================
+// SHIPMENT MANAGEMENT
+// ============================================
+
+Table shipments {
+  id bigint [pk, increment]
+  shipment_number varchar(50) [unique, not null, note: 'Internal tracking number']
+  organization_id bigint [ref: > organizations.id, not null]
+  order_reference varchar(255) [note: 'Client order ID']
+  invoice_number varchar(255)
+  
+  // Pickup Details
+  pickup_address_id bigint [ref: > addresses.id]
+  pickup_warehouse_id bigint [ref: > warehouses.id]
+  pickup_name varchar(255)
+  pickup_phone varchar(20)
+  pickup_email varchar(255)
+  pickup_pincode varchar(10) [not null]
+  pickup_city varchar(100)
+  pickup_state varchar(100)
+  
+  // Delivery Details
+  delivery_address_id bigint [ref: > addresses.id]
+  delivery_name varchar(255) [not null]
+  delivery_phone varchar(20) [not null]
+  delivery_email varchar(255)
+  delivery_pincode varchar(10) [not null]
+  delivery_city varchar(100) [not null]
+  delivery_state varchar(100) [not null]
+  delivery_landmark varchar(255)
+  
+  // Shipment Details
+  shipment_type varchar(20) [default: 'forward'] // forward, return, exchange
+  service_type varchar(20) [default: 'express'] // express, surface, air, cod, ltl
+  payment_mode varchar(20) [default: 'prepaid'] // prepaid, cod, ppd
+  cod_amount decimal(10, 2) [default: 0]
+  declared_value decimal(10, 2) [not null]
+  product_type varchar(100)
+  content_description text
+  
+  // Weight & Dimensions
+  pieces int [default: 1]
+  weight_kg decimal(10, 3) [not null]
+  volumetric_weight_kg decimal(10, 3)
+  chargeable_weight_kg decimal(10, 3) [not null]
+  length_cm decimal(8, 2)
+  width_cm decimal(8, 2)
+  height_cm decimal(8, 2)
+  dimensions json [note: 'Array of package dimensions']
+  
+  // Shipping Partner
+  shipping_partner_id bigint [ref: > shipping_partners.id]
+  shipping_mode varchar(20) [default: 'partner'] // self, partner
+  waybill_number varchar(255) [note: 'AWB from partner']
+  lr_number varchar(255) [note: 'LR for LTL shipments']
+  token_number varchar(255)
+  partner_shipment_id varchar(255) [note: 'Partner tracking ID']
+  
+  // Status & Dates
+  status varchar(50) [default: 'pending'] // pending, confirmed, picked_up, in_transit, out_for_delivery, delivered, rto, cancelled, exception
+  current_status varchar(50)
+  booking_date date [not null]
+  preferred_pickup_date date
+  preferred_delivery_date date
+  expected_delivery_date date
+  actual_pickup_date timestamp
+  actual_delivery_date timestamp
+  
+  // RTO Details
+  rto_office_name varchar(255)
+  rto_address text
+  rto_pincode varchar(10)
+  rto_phone varchar(20)
+  
+  // Assignment
+  assigned_to bigint [ref: > users.id, note: 'Assigned staff']
+  created_by bigint [ref: > users.id, not null]
+  
+  // POD
+  pod_received boolean [default: false]
+  pod_received_at timestamp
+  pod_image_url varchar(500)
+  pod_signature_url varchar(500)
+  pod_remarks text
+  
+  // Financial
+  base_charges decimal(10, 2) [default: 0]
+  fuel_surcharge decimal(10, 2) [default: 0]
+  cod_charges decimal(10, 2) [default: 0]
+  additional_charges decimal(10, 2) [default: 0]
+  discount decimal(10, 2) [default: 0]
+  total_charges decimal(10, 2) [default: 0]
+  invoice_id bigint [ref: > invoices.id]
+  
+  // Metadata
+  tags json
+  custom_fields json
+  is_test_mode boolean [default: true]
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  updated_at timestamp [default: `CURRENT_TIMESTAMP`]
+  
+  indexes {
+    shipment_number
+    organization_id
+    order_reference
+    waybill_number
+    lr_number
+    status
+    booking_date
+    delivery_pincode
+    (organization_id, status)
+    (booking_date, status)
+  }
+}
+
+Table shipment_items {
+  id bigint [pk, increment]
+  shipment_id bigint [ref: > shipments.id, not null]
+  item_name varchar(255) [not null]
+  item_description text
+  sku_code varchar(100)
+  hsn_code varchar(20)
+  ean varchar(50)
+  quantity int [default: 1]
+  unit_price decimal(10, 2)
+  total_price decimal(10, 2)
+  weight_kg decimal(10, 3)
+  brand varchar(100)
+  category varchar(100)
+  color varchar(50)
+  size varchar(50)
+  image_url varchar(500)
+  tags json
+  item_details json [note: 'Additional item-specific data']
+  return_reason varchar(255)
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  updated_at timestamp [default: `CURRENT_TIMESTAMP`]
+  
+  indexes {
+    shipment_id
+    sku_code
+    hsn_code
+  }
+}
+
+Table shipment_status_history {
+  id bigint [pk, increment]
+  shipment_id bigint [ref: > shipments.id, not null]
+  status varchar(50) [not null]
+  previous_status varchar(50)
+  status_description text
+  location varchar(255)
+  facility_name varchar(255)
+  facility_type varchar(50) [note: 'warehouse, hub, sorting, delivery']
+  remarks text
+  updated_by bigint [ref: > users.id]
+  status_date timestamp [not null, default: `CURRENT_TIMESTAMP`]
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  
+  indexes {
+    shipment_id
+    status
+    status_date
+    (shipment_id, status_date)
+  }
+}
+
+Table shipment_tracking_events {
+  id bigint [pk, increment]
+  shipment_id bigint [ref: > shipments.id, not null]
+  event_type varchar(50) [not null] // picked_up, in_transit, out_for_delivery, delivered, exception, etc.
+  event_description text
+  location varchar(255)
+  facility_code varchar(100)
+  facility_name varchar(255)
+  scanned_by varchar(255)
+  scanned_at timestamp [not null]
+  partner_event_id varchar(255) [note: 'Event ID from partner API']
+  partner_data json [note: 'Raw data from partner']
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  
+  indexes {
+    shipment_id
+    event_type
+    scanned_at
+    (shipment_id, scanned_at)
+  }
+}
+
+// ============================================
+// NDR & EXCEPTIONS
+// ============================================
+
+Table ndr_requests {
+  id bigint [pk, increment]
+  shipment_id bigint [ref: > shipments.id, not null]
+  ndr_type varchar(50) [not null] // address_incorrect, customer_unavailable, refused, etc.
+  reason text
+  attempted_date date
+  next_attempt_date date
+  action_taken varchar(100) [note: 'reattempt, rto, hold, etc.']
+  status varchar(50) [default: 'pending'] // pending, resolved, rto_initiated
+  resolved_at timestamp
+  resolved_by bigint [ref: > users.id]
+  remarks text
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  updated_at timestamp [default: `CURRENT_TIMESTAMP`]
+  
+  indexes {
+    shipment_id
+    status
+    attempted_date
+    (shipment_id, status)
+  }
+}
+
+// ============================================
+// CANCELLATION & RETURNS
+// ============================================
+
+Table cancellation_requests {
+  id bigint [pk, increment]
+  shipment_id bigint [ref: > shipments.id, not null]
+  organization_id bigint [ref: > organizations.id, not null]
+  request_type varchar(20) [default: 'cancellation'] // cancellation, return
+  reason text
+  status varchar(50) [default: 'requested'] // requested, processing, approved, rejected, completed
+  requested_by bigint [ref: > users.id]
+  processed_by bigint [ref: > users.id]
+  partner_cancellation_id varchar(255)
+  partner_response json
+  error_message text
+  remarks text
+  requested_at timestamp [default: `CURRENT_TIMESTAMP`]
+  processed_at timestamp
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  updated_at timestamp [default: `CURRENT_TIMESTAMP`]
+  
+  indexes {
+    shipment_id
+    organization_id
+    status
+    requested_at
+  }
+}
+
+// ============================================
+// CLAIMS & DISPUTES
+// ============================================
+
+Table claims {
+  id bigint [pk, increment]
+  claim_number varchar(50) [unique, not null]
+  shipment_id bigint [ref: > shipments.id, not null]
+  organization_id bigint [ref: > organizations.id, not null]
+  claim_type varchar(50) [not null] // damage, lost, short_delivery, delay, etc.
+  claim_amount decimal(10, 2) [not null]
+  description text
+  supporting_documents json [note: 'Array of document URLs']
+  status varchar(50) [default: 'pending'] // pending, under_review, approved, rejected, settled
+  reviewed_by bigint [ref: > users.id]
+  reviewed_at timestamp
+  settlement_amount decimal(10, 2)
+  settlement_date date
+  remarks text
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  updated_at timestamp [default: `CURRENT_TIMESTAMP`]
+  
+  indexes {
+    claim_number
+    shipment_id
+    organization_id
+    status
+  }
+}
+
+// ============================================
+// BILLING & INVOICING
+// ============================================
+
+Table invoices {
+  id bigint [pk, increment]
+  invoice_number varchar(50) [unique, not null]
+  organization_id bigint [ref: > organizations.id, not null]
+  invoice_type varchar(20) [default: 'shipment'] // shipment, credit_note, debit_note
+  invoice_date date [not null]
+  due_date date
+  billing_period_start date
+  billing_period_end date
+  subtotal decimal(12, 2) [not null]
+  tax_amount decimal(12, 2) [default: 0]
+  discount_amount decimal(12, 2) [default: 0]
+  total_amount decimal(12, 2) [not null]
+  currency varchar(3) [default: 'INR']
+  status varchar(20) [default: 'draft'] // draft, generated, sent, paid, overdue, cancelled
+  payment_status varchar(20) [default: 'pending'] // pending, partial, paid, overdue
+  paid_amount decimal(12, 2) [default: 0]
+  paid_at timestamp
+  payment_reference varchar(255)
+  pdf_url varchar(500)
+  created_by bigint [ref: > users.id]
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  updated_at timestamp [default: `CURRENT_TIMESTAMP`]
+  
+  indexes {
+    invoice_number
+    organization_id
+    invoice_date
+    status
+    (organization_id, status)
+  }
+}
+
+Table invoice_line_items {
+  id bigint [pk, increment]
+  invoice_id bigint [ref: > invoices.id, not null]
+  shipment_id bigint [ref: > shipments.id]
+  description varchar(500)
+  quantity int [default: 1]
+  unit_price decimal(10, 2) [not null]
+  tax_rate decimal(5, 2) [default: 0]
+  tax_amount decimal(10, 2) [default: 0]
+  total_amount decimal(10, 2) [not null]
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  
+  indexes {
+    invoice_id
+    shipment_id
+  }
+}
+
+Table payments {
+  id bigint [pk, increment]
+  payment_number varchar(50) [unique, not null]
+  organization_id bigint [ref: > organizations.id, not null]
+  invoice_id bigint [ref: > invoices.id]
+  payment_type varchar(20) [default: 'credit'] // credit, debit, refund, adjustment
+  payment_method varchar(50) [note: 'bank_transfer, cheque, online, cash, etc.']
+  amount decimal(12, 2) [not null]
+  payment_date date [not null]
+  transaction_reference varchar(255)
+  bank_name varchar(255)
+  cheque_number varchar(100)
+  remarks text
+  status varchar(20) [default: 'pending'] // pending, completed, failed, reversed
+  processed_by bigint [ref: > users.id]
+  processed_at timestamp
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  updated_at timestamp [default: `CURRENT_TIMESTAMP`]
+  
+  indexes {
+    payment_number
+    organization_id
+    invoice_id
+    payment_date
+    status
+  }
+}
+
+// ============================================
+// API INTEGRATION & LOGGING
+// ============================================
+
+Table api_integration_logs {
+  id bigint [pk, increment]
+  shipment_id bigint [ref: > shipments.id]
+  organization_id bigint [ref: > organizations.id]
+  shipping_partner_id bigint [ref: > shipping_partners.id]
+  api_type varchar(50) [not null] // waybill_create, waybill_cancel, tracking, serviceability, etc.
+  endpoint varchar(500) [not null]
+  http_method varchar(10) [not null] // GET, POST, PUT, DELETE
+  request_payload json
+  response_data json
+  status_code int
+  is_success boolean [default: false]
+  execution_time_ms int
+  error_message text
+  waybill_number varchar(255)
+  token_number varchar(255)
+  partner_response_id varchar(255)
+  provider_specific_data json
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  
+  indexes {
+    shipment_id
+    organization_id
+    shipping_partner_id
+    api_type
+    is_success
+    created_at
+    (shipment_id, api_type)
+  }
+}
+
+// ============================================
+// AUDIT TRAIL (Column-level change tracking)
+// ============================================
+
+Table audit_logs {
+  id bigint [pk, increment]
+  table_name varchar(100) [not null]
+  record_id bigint [not null]
+  column_name varchar(100) [not null]
+  old_value text
+  new_value text
+  change_type varchar(20) [not null] // insert, update, delete
+  changed_by bigint [ref: > users.id, not null]
+  changed_at timestamp [not null, default: `CURRENT_TIMESTAMP`]
+  ip_address varchar(45)
+  user_agent varchar(500)
+  request_id varchar(100) [note: 'For tracking related changes']
+  additional_context json
+  
+  indexes {
+    (table_name, record_id)
+    column_name
+    changed_by
+    changed_at
+    (table_name, changed_at)
+  }
+}
+
+// ============================================
+// WEBHOOKS & NOTIFICATIONS
+// ============================================
+
+Table webhooks {
+  id bigint [pk, increment]
+  organization_id bigint [ref: > organizations.id, not null]
+  event_type varchar(100) [not null] // shipment.created, shipment.status_updated, shipment.delivered, etc.
+  webhook_url varchar(500) [not null]
+  secret_key varchar(255) [note: 'For webhook signature verification']
+  is_active boolean [default: true]
+  retry_count int [default: 0]
+  max_retries int [default: 3]
+  last_triggered_at timestamp
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  updated_at timestamp [default: `CURRENT_TIMESTAMP`]
+  
+  indexes {
+    organization_id
+    event_type
+    is_active
+    (organization_id, event_type, is_active)
+  }
+}
+
+Table webhook_deliveries {
+  id bigint [pk, increment]
+  webhook_id bigint [ref: > webhooks.id, not null]
+  shipment_id bigint [ref: > shipments.id]
+  event_type varchar(100) [not null]
+  payload json [not null]
+  response_status_code int
+  response_body text
+  attempt_number int [default: 1]
+  status varchar(20) [default: 'pending'] // pending, success, failed
+  error_message text
+  delivered_at timestamp
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  
+  indexes {
+    webhook_id
+    shipment_id
+    status
+    created_at
+    (webhook_id, status)
+  }
+}
+
+Table notifications {
+  id uuid [pk]
+  type varchar(255) [not null]
+  notifiable_type varchar(255) [not null] // App\Models\User, App\Models\Organization
+  notifiable_id bigint [not null]
+  data json [not null]
+  read_at timestamp
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  updated_at timestamp [default: `CURRENT_TIMESTAMP`]
+  
+  indexes {
+    (notifiable_type, notifiable_id)
+    read_at
+    type
+  }
+}
+
+// ============================================
+// SYSTEM CONFIGURATION
+// ============================================
+
+Table system_settings {
+  id bigint [pk, increment]
+  setting_key varchar(100) [unique, not null]
+  setting_value text
+  setting_type varchar(50) [default: 'string'] // string, integer, boolean, json
+  category varchar(50) [default: 'general'] // general, billing, shipping, api, etc.
+  description text
+  is_encrypted boolean [default: false]
+  updated_by bigint [ref: > users.id]
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  updated_at timestamp [default: `CURRENT_TIMESTAMP`]
+  
+  indexes {
+    setting_key
+    category
+  }
+}
+
+Table pricing_rules {
+  id bigint [pk, increment]
+  rule_name varchar(255) [not null]
+  organization_id bigint [ref: > organizations.id, note: 'null for global rules']
+  shipping_partner_id bigint [ref: > shipping_partners.id, note: 'null for all partners']
+  rule_type varchar(50) [not null] // weight_based, distance_based, flat_rate, percentage
+  min_weight_kg decimal(10, 3)
+  max_weight_kg decimal(10, 3)
+  min_distance_km decimal(10, 2)
+  max_distance_km decimal(10, 2)
+  base_charge decimal(10, 2)
+  per_kg_charge decimal(10, 2)
+  fuel_surcharge_percentage decimal(5, 2)
+  cod_charge_percentage decimal(5, 2)
+  additional_charges json
+  is_active boolean [default: true]
+  priority int [default: 0, note: 'Higher priority rules applied first']
+  effective_from date
+  effective_until date
+  created_at timestamp [default: `CURRENT_TIMESTAMP`]
+  updated_at timestamp [default: `CURRENT_TIMESTAMP`]
+  
+  indexes {
+    organization_id
+    shipping_partner_id
+    is_active
+    (organization_id, shipping_partner_id, is_active)
+  }
+}
+
+// ============================================
+// RELATIONSHIPS & NOTES
+// ============================================
+
+Ref: shipments.organization_id > organizations.id [delete: restrict]
+Ref: shipments.pickup_address_id > addresses.id [delete: set null]
+Ref: shipments.delivery_address_id > addresses.id [delete: set null]
+Ref: shipments.pickup_warehouse_id > warehouses.id [delete: set null]
+Ref: shipments.shipping_partner_id > shipping_partners.id [delete: set null]
+Ref: shipments.assigned_to > users.id [delete: set null]
+Ref: shipments.created_by > users.id [delete: restrict]
+Ref: shipments.invoice_id > invoices.id [delete: set null]
+Ref: warehouses.address_id > addresses.id [delete: set null]
+Ref: partner_credentials.shipping_partner_id > shipping_partners.id [delete: cascade]
+Ref: partner_credentials.warehouse_id > warehouses.id [delete: cascade]
+Ref: pincode_serviceability.shipping_partner_id > shipping_partners.id [delete: cascade]
+Ref: shipment_items.shipment_id > shipments.id [delete: cascade]
+Ref: shipment_status_history.shipment_id > shipments.id [delete: cascade]
+Ref: shipment_status_history.updated_by > users.id [delete: set null]
+Ref: shipment_tracking_events.shipment_id > shipments.id [delete: cascade]
+Ref: ndr_requests.shipment_id > shipments.id [delete: cascade]
+Ref: ndr_requests.resolved_by > users.id [delete: set null]
+Ref: cancellation_requests.shipment_id > shipments.id [delete: cascade]
+Ref: cancellation_requests.organization_id > organizations.id [delete: restrict]
+Ref: cancellation_requests.requested_by > users.id [delete: set null]
+Ref: cancellation_requests.processed_by > users.id [delete: set null]
+Ref: claims.shipment_id > shipments.id [delete: cascade]
+Ref: claims.organization_id > organizations.id [delete: restrict]
+Ref: claims.reviewed_by > users.id [delete: set null]
+Ref: invoices.organization_id > organizations.id [delete: restrict]
+Ref: invoices.created_by > users.id [delete: set null]
+Ref: invoice_line_items.invoice_id > invoices.id [delete: cascade]
+Ref: invoice_line_items.shipment_id > shipments.id [delete: set null]
+Ref: payments.organization_id > organizations.id [delete: restrict]
+Ref: payments.invoice_id > invoices.id [delete: set null]
+Ref: payments.processed_by > users.id [delete: set null]
+Ref: api_integration_logs.shipment_id > shipments.id [delete: set null]
+Ref: api_integration_logs.organization_id > organizations.id [delete: set null]
+Ref: api_integration_logs.shipping_partner_id > shipping_partners.id [delete: set null]
+Ref: audit_logs.changed_by > users.id [delete: restrict]
+Ref: webhooks.organization_id > organizations.id [delete: cascade]
+Ref: webhook_deliveries.webhook_id > webhooks.id [delete: cascade]
+Ref: webhook_deliveries.shipment_id > shipments.id [delete: set null]
+Ref: pricing_rules.organization_id > organizations.id [delete: cascade]
+Ref: pricing_rules.shipping_partner_id > shipping_partners.id [delete: set null]
+
