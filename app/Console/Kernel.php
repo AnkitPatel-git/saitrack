@@ -17,6 +17,7 @@ class Kernel extends ConsoleKernel
     {
         $schedule->command('tracking:fetch')->everyMinute()->withoutOverlapping();
         $schedule->command('tracking:delhivery')->everyMinute()->withoutOverlapping();
+        $schedule->command('pod:fetch-bluedart')->hourly()->withoutOverlapping();
     }
 
     /**
