@@ -166,6 +166,14 @@
               </p>
             </a>
           </li>
+          <li class="nav-item ">
+            <a href="{{route('cancellation-requests.index')}}" class="nav-link {{ (request()->is('Admin/cancellation-requests*')) ? 'active' : '' }}">
+              <i class="nav-icon fas fa-times-circle"></i>
+              <p>
+                Cancellation Requests
+              </p>
+            </a>
+          </li>
           @endcan
           @can('pincode')
           <li class="nav-item ">

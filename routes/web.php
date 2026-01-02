@@ -9,6 +9,7 @@ use App\Http\Controllers\Admin\pincodecontroller;
 use App\Http\Controllers\Admin\usercontroller;
 use App\Http\Controllers\Admin\PartnerController;
 use App\Http\Controllers\Admin\bulkreportcontroller; 
+use App\Http\Controllers\Admin\CancellationRequestController;
 use App\Http\Controllers\BarcodeController;
 /*
 |--------------------------------------------------------------------------
@@ -69,6 +70,10 @@ Route::middleware(['auth:sanctum', config('jetstream.auth_session'), 'verified']
          
           Route::get('/misreport',[AdminIndex::class, 'misreport'])->name('misreport');
           Route::get('/downloadMisReport',[AdminIndex::class, 'downloadMisReport'])->name('mis-report-download');
+        
+        // Cancellation Requests
+        Route::get('/cancellation-requests', [CancellationRequestController::class, 'index'])->name('cancellation-requests.index');
+        Route::post('/cancellation-requests/{id}/update-status', [CancellationRequestController::class, 'updateStatus'])->name('cancellation-requests.update-status');
     });
     Route::get('/generate-qr-code/{id}', [BarcodeController::class, 'generateQRCode'])->name('BarcodeIMG');
 });
